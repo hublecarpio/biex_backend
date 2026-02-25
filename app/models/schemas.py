@@ -6,19 +6,36 @@ from pydantic import BaseModel, Field
 
 # --- Chat API ---
 class ChatRequest(BaseModel):
-    """Request del endpoint de chat."""
+    """
+    Request del endpoint de chat (payload desde n8n/webhook).
+    id_conversation = thread_id para memoria Postgres.
+    """
 
-    user_id: str
-    message: str
-    session_id: str
+    mensaje: str
+    id_conversation: str
+    id_user: str
+    tipo_respuesta: str = "informativa"  # ej. informativa, socratica, etc.
     stream: bool = False
 
 
 class ChatResponse(BaseModel):
-    """Response del endpoint de chat (modo no-streaming)."""
+    """Response del endpoint de chat (modo no-streaming) - legacy."""
 
     response: str
     current_phase: str
+
+
+class ChatResponseStructured(BaseModel):
+    """
+    Response estructurada para consumo en n8n u otros clientes.
+    mensajes: segmentos de texto (sin markdown, sin URLs de imagen).
+    images: URLs de imágenes Minio (https://minio.biexedu.com/n8nback/*.png).
+    """
+
+    mensajes: list[str] = Field(default_factory=list)
+    images: list[str] = Field(default_factory=list)
+    images_count: int = 0
+    current_phase: str = "generativa"
 
 
 # --- Gatekeeper (evaluación del alumno) ---

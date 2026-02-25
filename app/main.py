@@ -1,8 +1,9 @@
 """
 BIEX Backend - Agente Tutor Cognitivo.
-FastAPI + LangGraph + streaming SSE.
+FastAPI + LangGraph + streaming SSE + memoria Postgres.
 """
 import json
+from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from fastapi import FastAPI, Depends, HTTPException, Request
@@ -12,7 +13,8 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.config import get_settings
 from app.graph.builder import build_graph
 from app.graph.state import GraphState
-from app.models.schemas import ChatRequest, ChatResponse
+from app.models.schemas import ChatRequest, ChatResponseStructured
+from app.utils.response_parser import parse_response_to_structured
 
 
 # --- Dependencia API Key ---
@@ -23,11 +25,28 @@ def verify_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
+# --- Lifespan: Postgres checkpointer + grafo ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    settings = get_settings()
+    if settings.database_url:
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
+            await checkpointer.setup()
+            app.state.graph = build_graph(checkpointer)
+            yield
+    else:
+        app.state.graph = build_graph(None)
+        yield
+
+
 # --- App ---
 app = FastAPI(
     title="BIEX API",
     description="Agente Tutor Cognitivo - Backend",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -43,17 +62,18 @@ async def health():
 )
 async def chat(request: ChatRequest):
     """
-    Chat con el tutor. Si stream=False devuelve ChatResponse.
-    Si stream=True devuelve StreamingResponse (SSE) con los tokens.
+    Chat con el tutor. Payload: mensaje, id_conversation, id_user, tipo_respuesta, stream.
+    id_conversation = thread_id para memoria Postgres. Respuesta: mensajes, images, images_count, current_phase.
     """
     initial_state: GraphState = {
-        "messages": [HumanMessage(content=request.message)],
-        "user_id": request.user_id,
+        "messages": [HumanMessage(content=request.mensaje)],
+        "user_id": request.id_user,
     }
-    graph = build_graph()
+    config = {"configurable": {"thread_id": request.id_conversation}}
+    graph = request.app.state.graph
 
     if not request.stream:
-        result = await graph.ainvoke(initial_state)
+        result = await graph.ainvoke(initial_state, config=config)
         messages = result.get("messages") or []
         fase = result.get("fase_actual") or "generativa"
         response_text = ""
@@ -61,12 +81,20 @@ async def chat(request: ChatRequest):
             if isinstance(m, AIMessage):
                 response_text = m.content if isinstance(m.content, str) else str(m.content)
                 break
-        return ChatResponse(response=response_text, current_phase=fase)
+        parsed = parse_response_to_structured(response_text)
+        return ChatResponseStructured(
+            mensajes=parsed["mensajes"],
+            images=parsed["images"],
+            images_count=parsed["images_count"],
+            current_phase=fase,
+        )
 
-    # Streaming: SSE con tokens
+    # Streaming: SSE con tokens; al final un evento con la respuesta estructurada
     async def event_generator() -> AsyncGenerator[str, None]:
+        full_text: list[str] = []
         async for event in graph.astream_events(
             initial_state,
+            config=config,
             version="v2",
             include_types=["on_chat_model_stream"],
         ):
@@ -81,8 +109,10 @@ async def chat(request: ChatRequest):
                 continue
             content = chunk.get("content", "") if isinstance(chunk, dict) else getattr(chunk, "content", "") or ""
             if isinstance(content, str) and content:
+                full_text.append(content)
                 yield f"data: {json.dumps({'token': content})}\n\n"
-        # Envío de fase al final (opcional; el cliente puede obtenerla del último mensaje)
-        yield f"data: {json.dumps({'done': True})}\n\n"
+        # Evento final con la respuesta estructurada (mensajes, images, images_count)
+        parsed = parse_response_to_structured("".join(full_text))
+        yield f"data: {json.dumps({'done': True, 'mensajes': parsed['mensajes'], 'images': parsed['images'], 'images_count': parsed['images_count']})}\n\n"
 
     return EventSourceResponse(event_generator())

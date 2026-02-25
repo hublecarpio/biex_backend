@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     supabase_url: str = ""
     supabase_anon_key: str = ""
 
+    # Postgres (memoria / checkpointer LangGraph)
+    database_url: str = ""  # postgresql://user:pass@host:port/db
+
 
 def get_settings() -> Settings:
     """Factory para obtener la configuración."""

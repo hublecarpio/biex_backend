@@ -1,6 +1,7 @@
 from app.models.schemas import (
     ChatRequest,
     ChatResponse,
+    ChatResponseStructured,
     GatekeeperEval,
     StarterProfileResponse,
     ProfileData,
@@ -11,6 +12,7 @@ from app.models.schemas import (
 __all__ = [
     "ChatRequest",
     "ChatResponse",
+    "ChatResponseStructured",
     "GatekeeperEval",
     "StarterProfileResponse",
     "ProfileData",
