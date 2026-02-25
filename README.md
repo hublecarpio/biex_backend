@@ -2,6 +2,10 @@
 
 API FastAPI + LangGraph para el tutor cognitivo BIEX.
 
+## Documentación
+
+- **[Flujo del agente y herramientas](docs/flujo-agente.md)** – Diagrama de la lógica del agente y uso de Supabase, Gemini, Postgres y parser.
+
 ## Requisitos
 
 - Python 3.11+ o Docker
