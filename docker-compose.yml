@@ -10,8 +10,13 @@ services:
         aliases:
           - sofia-brain
           - brain-api
+      biex_supabase_default:
+        aliases:
+          - supabase-db
     restart: unless-stopped
 
 networks:
   easypanel-biex:
+    external: true
+  biex_supabase_default:
     external: true
