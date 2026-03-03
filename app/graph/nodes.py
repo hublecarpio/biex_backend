@@ -11,13 +11,19 @@ from app.services.supabase_api import SupabaseClient
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
-    """Instancia el LLM Gemini con la API key de config."""
+    """Instancia el LLM Gemini con fallback: gemini-3-flash-preview -> gemini-2.5-flash."""
     settings = get_settings()
-    return ChatGoogleGenerativeAI(
-        model="gemini-3-flash",
+    primary = ChatGoogleGenerativeAI(
+        model="gemini-3-flash-preview",
         google_api_key=settings.gemini_api_key,
         temperature=0.7,
     )
+    fallback = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=settings.gemini_api_key,
+        temperature=0.7,
+    )
+    return primary.with_fallbacks([fallback])
 
 
 def _build_system_content(system_prompt: str, starter_profile: dict) -> str:

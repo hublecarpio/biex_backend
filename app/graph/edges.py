@@ -13,12 +13,19 @@ COMPRENSION_THRESHOLD = 85.0
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
+    """Instancia el LLM Gemini con fallback: gemini-3-flash-preview -> gemini-2.5-flash."""
     settings = get_settings()
-    return ChatGoogleGenerativeAI(
-        model="gemini-3-flash",
+    primary = ChatGoogleGenerativeAI(
+        model="gemini-3-flash-preview",
         google_api_key=settings.gemini_api_key,
         temperature=0.2,
     )
+    fallback = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",
+        google_api_key=settings.gemini_api_key,
+        temperature=0.2,
+    )
+    return primary.with_fallbacks([fallback])
 
 
 async def evaluate_gatekeeper(state: GraphState) -> str:
