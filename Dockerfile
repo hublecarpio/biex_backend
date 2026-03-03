@@ -6,7 +6,9 @@ WORKDIR /app
 # Dependencias del sistema (mínimas)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    ca-certificates \
+    libpq5 \
+  && rm -rf /var/lib/apt/lists/*
 
 # Dependencias Python
 COPY requirements.txt .
