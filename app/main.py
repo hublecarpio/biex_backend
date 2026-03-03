@@ -76,19 +76,19 @@ async def health():
     "/api/v1/chat",
     dependencies=[Depends(verify_api_key)],
 )
-async def chat(request: ChatRequest):
+async def chat(http_request: Request, body: ChatRequest):
     """
     Chat con el tutor. Payload: mensaje, id_conversation, id_user, tipo_respuesta, stream.
     id_conversation = thread_id para memoria Postgres. Respuesta: mensajes, images, images_count, current_phase.
     """
     initial_state: GraphState = {
-        "messages": [HumanMessage(content=request.mensaje)],
-        "user_id": request.id_user,
+        "messages": [HumanMessage(content=body.mensaje)],
+        "user_id": body.id_user,
     }
-    config = {"configurable": {"thread_id": request.id_conversation}}
-    graph = request.app.state.graph
+    config = {"configurable": {"thread_id": body.id_conversation}}
+    graph = http_request.app.state.graph
 
-    if not request.stream:
+    if not body.stream:
         result = await graph.ainvoke(initial_state, config=config)
         messages = result.get("messages") or []
         fase = result.get("fase_actual") or "generativa"
