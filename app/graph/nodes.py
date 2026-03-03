@@ -14,7 +14,7 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     """Instancia el LLM Gemini con la API key de config."""
     settings = get_settings()
     return ChatGoogleGenerativeAI(
-        model="gemini-1.5-flash",
+        model="gemini-3-flash",
         google_api_key=settings.gemini_api_key,
         temperature=0.7,
     )
