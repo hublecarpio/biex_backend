@@ -1,6 +1,8 @@
 """
 Esquemas Pydantic para request/response y modelos de Supabase.
 """
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -28,14 +30,32 @@ class ChatResponse(BaseModel):
 class ChatResponseStructured(BaseModel):
     """
     Response estructurada para consumo en n8n u otros clientes.
-    mensajes: segmentos de texto (sin markdown, sin URLs de imagen).
-    images: URLs de imágenes Minio (https://minio.biexedu.com/n8nback/*.png).
+
+    Campos de imágenes:
+    - images: URLs disponibles de inmediato (vacío si el job está en background).
+    - images_count: cantidad final de imágenes (incluyendo las pendientes).
+    - images_pending: cantidad de imágenes siendo generadas en background. Si > 0,
+      el frontend debe mostrar ese número de placeholders y hacer polling al endpoint
+      GET /api/v1/images/{images_job_id} hasta que status == "done".
+    - images_job_id: ID del job de background. None si las imágenes ya están en `images`.
     """
 
     mensajes: list[str] = Field(default_factory=list)
     images: list[str] = Field(default_factory=list)
     images_count: int = 0
+    images_pending: int = Field(default=0, description="Imágenes siendo generadas en background")
+    images_job_id: str | None = Field(default=None, description="Job ID para polling de imágenes")
     current_phase: str = "generativa"
+
+
+class ImageJobResponse(BaseModel):
+    """Respuesta del endpoint GET /api/v1/images/{job_id}."""
+
+    job_id: str
+    status: Literal["pending", "done", "error"]
+    images_pending: int
+    urls: list[str] = Field(default_factory=list)
+    error: str | None = None
 
 
 class ImageTopic(BaseModel):

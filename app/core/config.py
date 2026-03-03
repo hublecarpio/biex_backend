@@ -2,6 +2,8 @@
 Configuración centralizada con pydantic-settings.
 Manejo de variables de entorno para BIEX Backend.
 """
+from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +34,11 @@ class Settings(BaseSettings):
     generate_image_webhook: str = ""  # POST con {"temas": [...]}
 
 
+@lru_cache(maxsize=1)
 def get_settings() -> Settings:
-    """Factory para obtener la configuración."""
+    """
+    Factory para obtener la configuración.
+    Cacheada con lru_cache: Settings se instancia UNA sola vez por proceso,
+    evitando releer el .env en cada request.
+    """
     return Settings()

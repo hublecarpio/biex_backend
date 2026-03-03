@@ -18,4 +18,6 @@ class GraphState(TypedDict, total=False):
     comprension_score: float
     frustracion_detectada: bool
     rag_context: str
-    image_urls: list  # URLs de imágenes generadas por el webhook
+    image_urls: list        # URLs de imágenes (vacío si se procesan en background)
+    images_job_id: str      # ID del job de generación de imágenes en background
+    images_pending: int     # Cantidad de imágenes siendo generadas (0 si ya están listas)

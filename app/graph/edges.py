@@ -15,21 +15,31 @@ logger = logging.getLogger(__name__)
 # Umbral de comprensión para ir a socrático
 COMPRENSION_THRESHOLD = 85.0
 
+# ---------------------------------------------------------------------------
+# Singleton LLM para el Gatekeeper — misma estrategia que nodes.py
+# ---------------------------------------------------------------------------
+_gatekeeper_llm_instance = None
 
-def _get_llm() -> ChatGoogleGenerativeAI:
-    """Instancia el LLM Gemini con fallback: gemini-3-flash-preview -> gemini-2.5-flash."""
-    settings = get_settings()
-    primary = ChatGoogleGenerativeAI(
-        model="gemini-3-flash-preview",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
-    fallback = ChatGoogleGenerativeAI(
-        model="gemini-2.5-flash",
-        google_api_key=settings.gemini_api_key,
-        temperature=0.2,
-    )
-    return primary.with_fallbacks([fallback])
+
+def _get_llm():
+    """Retorna la instancia singleton del LLM del Gatekeeper con fallback."""
+    global _gatekeeper_llm_instance
+    if _gatekeeper_llm_instance is None:
+        settings = get_settings()
+        primary = ChatGoogleGenerativeAI(
+            model="gemini-2.0-flash",
+            google_api_key=settings.gemini_api_key,
+            temperature=0.2,
+        )
+        fallback = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=settings.gemini_api_key,
+            temperature=0.2,
+        )
+        _gatekeeper_llm_instance = primary.with_fallbacks([fallback])
+        logger.info("[gatekeeper] Instancia LLM creada (singleton).")
+    return _gatekeeper_llm_instance
+
 
 
 async def evaluate_gatekeeper(state: GraphState) -> str:

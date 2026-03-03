@@ -1,10 +1,16 @@
 """
 BIEX Backend - Agente Tutor Cognitivo.
 FastAPI + LangGraph + streaming SSE + memoria Postgres.
+
+Endpoints:
+ - POST /api/v1/chat          → Respuesta del tutor (streaming o no).
+ - GET  /api/v1/images/{job_id} → Polling de imágenes generadas en background.
+ - GET  /health               → Health check.
 """
 import json
 import logging
 import traceback
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -17,7 +23,8 @@ from app.core.config import get_settings
 from app.graph.builder import build_graph
 from app.graph.nodes import _extract_text
 from app.graph.state import GraphState
-from app.models.schemas import ChatRequest, ChatResponseStructured
+from app.models.schemas import ChatRequest, ChatResponseStructured, ImageJobResponse
+from app.services.image_jobs import get_job
 from app.utils.response_parser import parse_response_to_structured
 
 # --- Logging ---
@@ -84,15 +91,66 @@ async def health():
     return {"status": "ok"}
 
 
+# ---------------------------------------------------------------------------
+# Endpoint de polling para imágenes generadas en background
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/v1/images/{job_id}",
+    response_model=ImageJobResponse,
+    dependencies=[Depends(verify_api_key)],
+    tags=["images"],
+    summary="Polling del estado de generación de imágenes",
+    description=(
+        "Consulta el estado de un job de generación de imágenes iniciado en background. "
+        "El frontend debe hacer polling hasta que `status == 'done'`. "
+        "Cuando `status == 'done'`, `urls` contiene las URLs finales de las imágenes."
+    ),
+)
+async def get_image_job(job_id: str):
+    """
+    GET /api/v1/images/{job_id}
+
+    Respuesta posible:
+    - status: "pending" → imágenes aún siendo generadas, seguir haciendo polling.
+    - status: "done"    → `urls` contiene las URLs listas. Detener polling.
+    - status: "error"   → falló la generación. `error` contiene el motivo.
+    - 404               → job_id inválido o expirado (TTL de 5 minutos).
+    """
+    job = get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Job '{job_id}' no encontrado o expirado. TTL máximo: 5 minutos."
+        )
+    return ImageJobResponse(
+        job_id=job.job_id,
+        status=job.status,
+        images_pending=job.images_pending if job.status == "pending" else 0,
+        urls=job.urls,
+        error=job.error,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Endpoint principal de chat
+# ---------------------------------------------------------------------------
+
 @app.post(
     "/api/v1/chat",
+    response_model=ChatResponseStructured,
     dependencies=[Depends(verify_api_key)],
+    tags=["chat"],
+    summary="Chat con el tutor cognitivo",
+    description=(
+        "Envía un mensaje al agente tutor. "
+        "La respuesta incluye `images_pending` e `images_job_id` cuando hay imágenes "
+        "siendo generadas en background. El frontend debe mostrar esa cantidad de "
+        "placeholders y hacer polling a GET /api/v1/images/{images_job_id}."
+    ),
 )
 async def chat(http_request: Request, body: ChatRequest):
-    """
-    Chat con el tutor. Payload: mensaje, id_conversation, id_user, tipo_respuesta, stream.
-    id_conversation = thread_id para memoria Postgres. Respuesta: mensajes, images, images_count, current_phase.
-    """
+    t_start = time.perf_counter()
     logger.info(
         "[chat] Request recibido — user_id=%s | conversation_id=%s | stream=%s | mensaje=%s chars",
         body.id_user,
@@ -111,9 +169,12 @@ async def chat(http_request: Request, body: ChatRequest):
     if not body.stream:
         logger.info("[chat] Modo no-streaming, invocando grafo...")
         result = await graph.ainvoke(initial_state, config=config)
+
         messages = result.get("messages") or []
         fase = result.get("fase_actual") or "generativa"
         image_urls_from_state: list[str] = result.get("image_urls") or []
+        images_job_id: str | None = result.get("images_job_id")
+        images_pending: int = result.get("images_pending") or 0
 
         response_text = ""
         for m in reversed(messages):
@@ -123,50 +184,83 @@ async def chat(http_request: Request, body: ChatRequest):
 
         parsed = parse_response_to_structured(response_text)
 
-        # Merge images: webhook URLs + Minio URLs from response text (deduplicado)
+        # Merge images disponibles de inmediato (state + parser) — deduplicado
         all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
 
+        elapsed = time.perf_counter() - t_start
         logger.info(
-            "[chat] Respuesta lista — fase=%s | segmentos=%s | imágenes=%s",
+            "[chat] Respuesta lista en %.2fs — fase=%s | segmentos=%s | imágenes=%s | pending=%s | job_id=%s",
+            elapsed,
             fase,
             len(parsed["mensajes"]),
             len(all_images),
+            images_pending,
+            images_job_id,
         )
         return ChatResponseStructured(
             mensajes=parsed["mensajes"],
             images=all_images,
-            images_count=len(all_images),
+            images_count=len(all_images) + images_pending,
+            images_pending=images_pending,
+            images_job_id=images_job_id,
             current_phase=fase,
         )
 
-    # Streaming: SSE con tokens; al final un evento con la respuesta estructurada
+    # --- Modo Streaming SSE ---
     logger.info("[chat] Modo streaming SSE iniciado.")
 
     async def event_generator() -> AsyncGenerator[str, None]:
         full_text: list[str] = []
+        images_job_id: str | None = None
+        images_pending: int = 0
+        image_urls_from_state: list[str] = []
+
+        # Capturamos el state completo con astream_events + on_chain_end para el state final
         async for event in graph.astream_events(
             initial_state,
             config=config,
             version="v2",
-            include_types=["on_chat_model_stream"],
         ):
             kind = event.get("event")
-            if kind != "on_chat_model_stream":
-                continue
-            data = event.get("data", {})
-            if not isinstance(data, dict):
-                continue
-            chunk = data.get("chunk")
-            if chunk is None:
-                continue
-            content = chunk.get("content", "") if isinstance(chunk, dict) else getattr(chunk, "content", "") or ""
-            extracted = _extract_text(content)
-            if extracted:
-                full_text.append(extracted)
-                yield f"data: {json.dumps({'token': extracted})}\n\n"
-        # Evento final con la respuesta estructurada
-        parsed = parse_response_to_structured("".join(full_text))
-        logger.info("[chat] Stream finalizado — total tokens acumulados: %s chars.", len("".join(full_text)))
-        yield f"data: {json.dumps({'done': True, 'mensajes': parsed['mensajes'], 'images': parsed['images'], 'images_count': parsed['images_count']})}\n\n"
+
+            if kind == "on_chat_model_stream":
+                data = event.get("data", {})
+                if not isinstance(data, dict):
+                    continue
+                chunk = data.get("chunk")
+                if chunk is None:
+                    continue
+                content = (
+                    chunk.get("content", "") if isinstance(chunk, dict)
+                    else getattr(chunk, "content", "") or ""
+                )
+                extracted = _extract_text(content)
+                if extracted:
+                    full_text.append(extracted)
+                    yield f"data: {json.dumps({'token': extracted})}\n\n"
+
+            elif kind == "on_chain_end":
+                # Capturamos el output del último nodo para extraer images_job_id
+                output = event.get("data", {}).get("output", {})
+                if isinstance(output, dict):
+                    job_id = output.get("images_job_id")
+                    if job_id:
+                        images_job_id = job_id
+                        images_pending = output.get("images_pending", 0)
+                    urls = output.get("image_urls") or []
+                    if urls:
+                        image_urls_from_state = urls
+
+        full_response = "".join(full_text)
+        parsed = parse_response_to_structured(full_response)
+        all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
+
+        elapsed = time.perf_counter() - t_start
+        logger.info(
+            "[chat] Stream finalizado en %.2fs — %s chars | pending=%s | job_id=%s",
+            elapsed, len(full_response), images_pending, images_job_id,
+        )
+
+        yield f"data: {json.dumps({'done': True, 'mensajes': parsed['mensajes'], 'images': all_images, 'images_count': len(all_images) + images_pending, 'images_pending': images_pending, 'images_job_id': images_job_id})}\n\n"
 
     return EventSourceResponse(event_generator())
