@@ -21,26 +21,41 @@ class SupabaseClient:
         settings = get_settings()
         self.base_url = (base_url or settings.supabase_url).rstrip("/")
         self.anon_key = anon_key or settings.supabase_anon_key
-        self._client: httpx.AsyncClient | None = None
+        self.service_role_key = settings.supabase_service_role_key
+        self._client_anon: httpx.AsyncClient | None = None
+        self._client_service: httpx.AsyncClient | None = None
+
+    def _make_client(self, key: str) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=30.0,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "apikey": key,
+                "Content-Type": "application/json",
+            },
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=30.0,
-                headers={
-                    "Authorization": f"Bearer {self.anon_key}",
-                    "apikey": self.anon_key,
-                    "Content-Type": "application/json",
-                },
-            )
-        return self._client
+        """Cliente con anon_key (para Edge Functions y lecturas públicas)."""
+        if self._client_anon is None or self._client_anon.is_closed:
+            self._client_anon = self._make_client(self.anon_key)
+        return self._client_anon
+
+    async def _get_service_client(self) -> httpx.AsyncClient:
+        """Cliente con service_role_key (para escrituras en tablas con RLS)."""
+        key = self.service_role_key or self.anon_key
+        if self._client_service is None or self._client_service.is_closed:
+            self._client_service = self._make_client(key)
+        return self._client_service
 
     async def close(self) -> None:
-        """Cierra el cliente HTTP."""
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
-            self._client = None
+        """Cierra los clientes HTTP."""
+        for c in (self._client_anon, self._client_service):
+            if c and not c.is_closed:
+                await c.aclose()
+        self._client_anon = None
+        self._client_service = None
 
     async def get_system_prompt(self) -> str:
         """
@@ -145,7 +160,7 @@ class SupabaseClient:
         Guarda un nuevo mensaje en la tabla nativa de Supabase.
         """
         logger.info("[supabase] POST message (role=%s, conversation_id=%s)...", role, conversation_id)
-        client = await self._get_client()
+        client = await self._get_service_client()  # Usa service_role_key para bypassear RLS
         payload = {
             "user_id": user_id,
             "conversation_id": conversation_id,

@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Supabase
     supabase_url: str = ""
     supabase_anon_key: str = ""
+    supabase_service_role_key: str = ""  # Para escritura en tablas con RLS desde el backend
 
     # Postgres (memoria / checkpointer LangGraph)
     # database_url ya no se usa porque pasamos al guardado nativo por REST

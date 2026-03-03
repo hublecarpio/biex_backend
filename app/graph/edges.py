@@ -27,12 +27,12 @@ def _get_llm():
     if _gatekeeper_llm_instance is None:
         settings = get_settings()
         primary = ChatGoogleGenerativeAI(
-            model="gemini-3-flash-preview",
+            model="gemini-2.5-flash",
             google_api_key=settings.gemini_api_key,
             temperature=0.2,
         )
         fallback = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
+            model="gemini-3-flash-preview",
             google_api_key=settings.gemini_api_key,
             temperature=0.2,
         )
