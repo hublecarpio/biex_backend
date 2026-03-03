@@ -32,11 +32,23 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     return primary.with_fallbacks([fallback])
 
 
+import ast
+
 def _extract_text(content) -> str:
     """
     Extrae texto plano del contenido de la respuesta del LLM.
-    Maneja tanto strings simples como listas de content blocks (type/text/extras).
+    Maneja strings simples, listas de content blocks (type/text/extras),
+    y representaciones en string de diccionarios o listas.
     """
+    if isinstance(content, str):
+        cleaned = content.strip()
+        if (cleaned.startswith("[") and cleaned.endswith("]")) or (cleaned.startswith("{") and cleaned.endswith("}")):
+            try:
+                parsed = ast.literal_eval(cleaned)
+                content = parsed if isinstance(parsed, list) else [parsed]
+            except Exception:
+                pass
+
     if isinstance(content, str):
         return content
     if isinstance(content, list):

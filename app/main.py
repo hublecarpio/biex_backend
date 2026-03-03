@@ -15,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import get_settings
 from app.graph.builder import build_graph
+from app.graph.nodes import _extract_text
 from app.graph.state import GraphState
 from app.models.schemas import ChatRequest, ChatResponseStructured
 from app.utils.response_parser import parse_response_to_structured
@@ -117,7 +118,7 @@ async def chat(http_request: Request, body: ChatRequest):
         response_text = ""
         for m in reversed(messages):
             if isinstance(m, AIMessage):
-                response_text = m.content if isinstance(m.content, str) else str(m.content)
+                response_text = _extract_text(m.content)
                 break
 
         parsed = parse_response_to_structured(response_text)
@@ -159,9 +160,10 @@ async def chat(http_request: Request, body: ChatRequest):
             if chunk is None:
                 continue
             content = chunk.get("content", "") if isinstance(chunk, dict) else getattr(chunk, "content", "") or ""
-            if isinstance(content, str) and content:
-                full_text.append(content)
-                yield f"data: {json.dumps({'token': content})}\n\n"
+            extracted = _extract_text(content)
+            if extracted:
+                full_text.append(extracted)
+                yield f"data: {json.dumps({'token': extracted})}\n\n"
         # Evento final con la respuesta estructurada
         parsed = parse_response_to_structured("".join(full_text))
         logger.info("[chat] Stream finalizado — total tokens acumulados: %s chars.", len("".join(full_text)))
