@@ -147,15 +147,11 @@ async def chat(http_request: Request, body: ChatRequest):
         len(body.mensaje),
     )
 
+    # Cargamos el historial de la conversación para dar contexto al grafo.
+    # El guardado en BD lo maneja la Edge Function de Supabase, no este backend.
     supabase = SupabaseClient()
     try:
         raw_history = await supabase.get_conversation_history(body.id_conversation)
-        await supabase.save_message(
-            user_id=body.id_user,
-            conversation_id=body.id_conversation,
-            role="user",
-            message=body.mensaje
-        )
     finally:
         await supabase.close()
 
@@ -179,27 +175,6 @@ async def chat(http_request: Request, body: ChatRequest):
     config = {"configurable": {"thread_id": body.id_conversation}}
     graph = http_request.app.state.graph
 
-    async def _save_assistant_message(response_text: str, fase: str, score: float, frustracion: bool, image_job_id: str | None):
-        supabase_bg = SupabaseClient()
-        try:
-            metadata = {
-                "fase_actual": fase,
-                "comprension_score": score,
-                "frustracion_detectada": frustracion,
-                "images_job_id": image_job_id
-            }
-            await supabase_bg.save_message(
-                user_id=body.id_user,
-                conversation_id=body.id_conversation,
-                role="assistant",
-                message=response_text,
-                metadata=metadata
-            )
-        except Exception as e:
-            logger.error("[chat] Error guardando mensaje del asistente a base de datos: %s", e)
-        finally:
-            await supabase_bg.close()
-
     if not body.stream:
         logger.info("[chat] Modo no-streaming, invocando grafo...")
         result = await graph.ainvoke(initial_state, config=config)
@@ -221,10 +196,6 @@ async def chat(http_request: Request, body: ChatRequest):
         parsed = parse_response_to_structured(response_text)
 
         all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
-
-        # Guardado en DB en background para no sumar milisegundos a la respuesta del usuario
-        import asyncio
-        asyncio.create_task(_save_assistant_message(response_text, fase, score, frustracion, images_job_id))
 
         elapsed = time.perf_counter() - t_start
         logger.info(
@@ -301,10 +272,6 @@ async def chat(http_request: Request, body: ChatRequest):
         full_response = "".join(full_text)
         parsed = parse_response_to_structured(full_response)
         all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
-
-        # Guardar en background
-        import asyncio
-        asyncio.create_task(_save_assistant_message(full_response, fase, score, frustracion, images_job_id))
 
         elapsed = time.perf_counter() - t_start
         logger.info(
