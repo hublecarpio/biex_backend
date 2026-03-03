@@ -38,6 +38,20 @@ class ChatResponseStructured(BaseModel):
     current_phase: str = "generativa"
 
 
+class ImageTopic(BaseModel):
+    """Un tema visual a generar como imagen."""
+    tema: str = Field(description="Nombre corto del tema visual")
+    descripcion: str = Field(description="Descripción detallada del tema para guiar al generador de imágenes (2-3 oraciones)")
+
+
+class ImageTopicList(BaseModel):
+    """Lista de temas visuales extraídos de la respuesta del tutor."""
+    temas: list[ImageTopic] = Field(
+        default_factory=list,
+        description="Lista de temas visuales relevantes de la respuesta. Vacía si no hay nada visual que mostrar."
+    )
+
+
 # --- Gatekeeper (evaluación del alumno) ---
 class GatekeeperEval(BaseModel):
     """Evaluación del gatekeeper: comprensión y frustración."""

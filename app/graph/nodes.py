@@ -9,7 +9,9 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.core.config import get_settings
 from app.graph.state import GraphState
+from app.models.schemas import ImageTopicList
 from app.services.supabase_api import SupabaseClient
+from app.services.image_service import generate_images
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,24 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     return primary.with_fallbacks([fallback])
 
 
+def _extract_text(content) -> str:
+    """
+    Extrae texto plano del contenido de la respuesta del LLM.
+    Maneja tanto strings simples como listas de content blocks (type/text/extras).
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(block.get("text", ""))
+        return "\n".join(p for p in parts if p)
+    return str(content)
+
+
 def _build_system_content(system_prompt: str, starter_profile: dict) -> str:
     """Construye el contenido del system message con prompt y perfil."""
     profile_str = json.dumps(starter_profile, ensure_ascii=False, indent=2)
@@ -38,6 +58,45 @@ def _build_system_content(system_prompt: str, starter_profile: dict) -> str:
 ## Perfil del alumno (usa esto para personalizar)
 {profile_str}
 """
+
+
+async def _extract_image_topics(response_text: str) -> list[dict]:
+    """
+    Usa el LLM para extraer temas visuales de la respuesta del tutor.
+    Retorna lista de dicts {"tema": ..., "descripcion": ...} o vacía si no aplica.
+    """
+    if not response_text.strip():
+        return []
+
+    settings = get_settings()
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash",  # siempre el modelo estable para este paso auxiliar
+        google_api_key=settings.gemini_api_key,
+        temperature=0.1,
+    )
+    structured_llm = llm.with_structured_output(ImageTopicList)
+
+    prompt = (
+        "Analiza la siguiente respuesta de un tutor educativo. "
+        "Identifica los conceptos o elementos visuales concretos que se beneficiarían de una imagen ilustrativa "
+        "(diagramas, partes de objetos, procesos, estructuras, etc.). "
+        "Para cada tema visual, provee un nombre corto y una descripción detallada de 2-3 oraciones "
+        "que ayude al generador de imágenes a crear algo preciso y educativo. "
+        "Si la respuesta es puramente conversacional o no requiere imágenes, devuelve una lista vacía.\n\n"
+        f"Respuesta del tutor:\n{response_text}"
+    )
+
+    try:
+        result: ImageTopicList = await structured_llm.ainvoke(prompt)
+        topics = [{"tema": t.tema, "descripcion": t.descripcion} for t in result.temas]
+        if topics:
+            logger.info("[image_topics] %s tema(s) visuales detectados: %s", len(topics), [t["tema"] for t in topics])
+        else:
+            logger.info("[image_topics] No se detectaron temas visuales.")
+        return topics
+    except Exception as e:
+        logger.warning("[image_topics] Error extrayendo temas: %s", e)
+        return []
 
 
 async def node_setup(state: GraphState) -> dict:
@@ -74,19 +133,36 @@ async def node_setup(state: GraphState) -> dict:
         await client.close()
 
     starter_profile = starter_profile_obj.model_dump() if starter_profile_obj else {}
-    has_rag = bool(rag_context)
-    has_profile = bool(starter_profile)
     logger.info(
         "[node_setup] Supabase OK — system_prompt=%s chars | profile=%s | rag=%s",
         len(system_prompt) if system_prompt else 0,
-        "OK" if has_profile else "vacío",
-        "OK" if has_rag else "vacío",
+        "OK" if starter_profile else "vacío",
+        "OK" if rag_context else "vacío",
     )
 
     return {
         "starter_profile": starter_profile,
         "system_prompt": system_prompt or "Eres un tutor educativo amable y claro.",
         "rag_context": rag_context or "",
+    }
+
+
+async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) -> dict:
+    """
+    Invoca el LLM, extrae el texto limpio y genera imágenes si corresponde.
+    Retorna dict con messages, fase_actual, e image_urls (para el state).
+    """
+    response = await llm.ainvoke(full_messages)
+    content = _extract_text(response.content if hasattr(response, "content") else response)
+    logger.info("[%s] Respuesta del LLM: %s chars.", fase, len(content))
+
+    topics = await _extract_image_topics(content)
+    image_urls = await generate_images(topics) if topics else []
+
+    return {
+        "messages": [AIMessage(content=content)],
+        "fase_actual": fase,
+        "image_urls": image_urls,
     }
 
 
@@ -107,14 +183,7 @@ async def node_generativo(state: GraphState) -> dict:
 
     llm = _get_llm()
     full_messages: list[BaseMessage] = [SystemMessage(content=system_content)] + list(messages)
-    response = await llm.ainvoke(full_messages)
-    content = response.content if hasattr(response, "content") else str(response)
-
-    logger.info("[node_generativo] Respuesta generada (%s chars).", len(content))
-    return {
-        "messages": [AIMessage(content=content)],
-        "fase_actual": "generativa",
-    }
+    return await _invoke_with_images(llm, full_messages, "generativa")
 
 
 async def node_vicario(state: GraphState) -> dict:
@@ -132,14 +201,7 @@ async def node_vicario(state: GraphState) -> dict:
 
     llm = _get_llm()
     full_messages: list[BaseMessage] = [SystemMessage(content=system_content)] + list(messages)
-    response = await llm.ainvoke(full_messages)
-    content = response.content if hasattr(response, "content") else str(response)
-
-    logger.info("[node_vicario] Respuesta vicaria generada (%s chars).", len(content))
-    return {
-        "messages": [AIMessage(content=content)],
-        "fase_actual": "vicaria",
-    }
+    return await _invoke_with_images(llm, full_messages, "vicaria")
 
 
 async def node_socratico(state: GraphState) -> dict:
@@ -157,14 +219,7 @@ async def node_socratico(state: GraphState) -> dict:
 
     llm = _get_llm()
     full_messages: list[BaseMessage] = [SystemMessage(content=system_content)] + list(messages)
-    response = await llm.ainvoke(full_messages)
-    content = response.content if hasattr(response, "content") else str(response)
-
-    logger.info("[node_socratico] Preguntas socráticas generadas (%s chars).", len(content))
-    return {
-        "messages": [AIMessage(content=content)],
-        "fase_actual": "socratica",
-    }
+    return await _invoke_with_images(llm, full_messages, "socratica")
 
 
 async def node_metacognicion(state: GraphState) -> dict:

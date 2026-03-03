@@ -112,22 +112,29 @@ async def chat(http_request: Request, body: ChatRequest):
         result = await graph.ainvoke(initial_state, config=config)
         messages = result.get("messages") or []
         fase = result.get("fase_actual") or "generativa"
+        image_urls_from_state: list[str] = result.get("image_urls") or []
+
         response_text = ""
         for m in reversed(messages):
             if isinstance(m, AIMessage):
                 response_text = m.content if isinstance(m.content, str) else str(m.content)
                 break
+
         parsed = parse_response_to_structured(response_text)
+
+        # Merge images: webhook URLs + Minio URLs from response text (deduplicado)
+        all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
+
         logger.info(
             "[chat] Respuesta lista — fase=%s | segmentos=%s | imágenes=%s",
             fase,
             len(parsed["mensajes"]),
-            parsed["images_count"],
+            len(all_images),
         )
         return ChatResponseStructured(
             mensajes=parsed["mensajes"],
-            images=parsed["images"],
-            images_count=parsed["images_count"],
+            images=all_images,
+            images_count=len(all_images),
             current_phase=fase,
         )
 

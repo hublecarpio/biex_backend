@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # Postgres (memoria / checkpointer LangGraph)
     database_url: str = ""  # postgresql://user:pass@host:port/db
 
+    # Image generation webhook
+    generate_image_webhook: str = ""  # POST con {"temas": [...]}
+
 
 def get_settings() -> Settings:
     """Factory para obtener la configuración."""
