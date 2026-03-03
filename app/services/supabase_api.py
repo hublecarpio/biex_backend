@@ -30,6 +30,7 @@ class SupabaseClient:
                 timeout=30.0,
                 headers={
                     "Authorization": f"Bearer {self.anon_key}",
+                    "apikey": self.anon_key,
                     "Content-Type": "application/json",
                 },
             )
@@ -113,3 +114,59 @@ class SupabaseClient:
         except Exception as e:
             logger.warning("[supabase] query_knowledge falló: %s", e)
             return ""
+
+    async def get_conversation_history(self, conversation_id: str) -> list[dict]:
+        """
+        GET a /rest/v1/messages.
+        Retorna el historial de la conversación ordenado cronológicamente.
+        """
+        logger.info("[supabase] GET messages para conversation_id=%s...", conversation_id)
+        client = await self._get_client()
+        try:
+            resp = await client.get(
+                "/rest/v1/messages",
+                params={
+                    "conversation_id": f"eq.{conversation_id}",
+                    "select": "*",
+                    "order": "created_at.asc"
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            logger.info("[supabase] Historial recuperado: %s mensajes.", len(data))
+            return data
+        except Exception as e:
+            logger.warning("[supabase] get_conversation_history falló: %s", e)
+            return []
+
+    async def save_message(self, user_id: str, conversation_id: str, role: str, message: str, metadata: dict | None = None) -> dict | None:
+        """
+        POST a /rest/v1/messages.
+        Guarda un nuevo mensaje en la tabla nativa de Supabase.
+        """
+        logger.info("[supabase] POST message (role=%s, conversation_id=%s)...", role, conversation_id)
+        client = await self._get_client()
+        payload = {
+            "user_id": user_id,
+            "conversation_id": conversation_id,
+            "role": role,
+            "message": message,
+        }
+        if metadata is not None:
+            payload["metadata"] = metadata
+
+        try:
+            resp = await client.post(
+                "/rest/v1/messages",
+                headers={"Prefer": "return=representation"},
+                json=payload
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data and isinstance(data, list):
+                logger.debug("[supabase] Mensaje guardado correctamente (ID: %s).", data[0].get("id"))
+                return data[0]
+            return None
+        except Exception as e:
+            logger.warning("[supabase] save_message falló: %s", e)
+            return None

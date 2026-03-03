@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     supabase_anon_key: str = ""
 
     # Postgres (memoria / checkpointer LangGraph)
-    database_url: str = ""  # postgresql://user:pass@host:port/db
+    # database_url ya no se usa porque pasamos al guardado nativo por REST
 
     # Image generation webhook
     generate_image_webhook: str = ""  # POST con {"temas": [...]}

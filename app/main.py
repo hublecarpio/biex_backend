@@ -25,6 +25,7 @@ from app.graph.nodes import _extract_text
 from app.graph.state import GraphState
 from app.models.schemas import ChatRequest, ChatResponseStructured, ImageJobResponse
 from app.services.image_jobs import get_job
+from app.services.supabase_api import SupabaseClient
 from app.utils.response_parser import parse_response_to_structured
 
 # --- Logging ---
@@ -54,24 +55,13 @@ async def global_exception_handler(request: Request, exc: Exception):
     )
 
 
-# --- Lifespan: Postgres checkpointer + grafo ---
+# --- Lifespan: Inicialización de Grafo ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
-    if settings.database_url:
-        logger.info("[lifespan] Conectando a Postgres para checkpointer LangGraph...")
-        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-
-        async with AsyncPostgresSaver.from_conn_string(settings.database_url) as checkpointer:
-            await checkpointer.setup()
-            app.state.graph = build_graph(checkpointer)
-            logger.info("[lifespan] Grafo compilado con checkpointer Postgres. App lista.")
-            yield
-    else:
-        logger.info("[lifespan] DATABASE_URL no configurada, usando MemorySaver in-process.")
-        app.state.graph = build_graph(None)
-        logger.info("[lifespan] Grafo compilado con MemorySaver. App lista.")
-        yield
+    logger.info("[lifespan] Inicializando grafo BIEX (Memoria in-process)...")
+    app.state.graph = build_graph()
+    logger.info("[lifespan] Grafo compilado. App lista.")
+    yield
 
 
 # --- App ---
@@ -144,9 +134,7 @@ async def get_image_job(job_id: str):
     summary="Chat con el tutor cognitivo",
     description=(
         "Envía un mensaje al agente tutor. "
-        "La respuesta incluye `images_pending` e `images_job_id` cuando hay imágenes "
-        "siendo generadas en background. El frontend debe mostrar esa cantidad de "
-        "placeholders y hacer polling a GET /api/v1/images/{images_job_id}."
+        "El historial se recupera automáticamente desde Supabase (tabla `messages`)."
     ),
 )
 async def chat(http_request: Request, body: ChatRequest):
@@ -159,12 +147,58 @@ async def chat(http_request: Request, body: ChatRequest):
         len(body.mensaje),
     )
 
+    supabase = SupabaseClient()
+    try:
+        raw_history = await supabase.get_conversation_history(body.id_conversation)
+        await supabase.save_message(
+            user_id=body.id_user,
+            conversation_id=body.id_conversation,
+            role="user",
+            message=body.mensaje
+        )
+    finally:
+        await supabase.close()
+
+    messages = []
+    for msg in raw_history:
+        role = msg.get("role")
+        content = msg.get("message", "")
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        elif role == "assistant":
+            messages.append(AIMessage(content=content))
+
+    messages.append(HumanMessage(content=body.mensaje))
+
     initial_state: GraphState = {
-        "messages": [HumanMessage(content=body.mensaje)],
+        "messages": messages,
         "user_id": body.id_user,
     }
+    
+    # Thread_id local solo para memoria MemorySaver en runtime (opcional)
     config = {"configurable": {"thread_id": body.id_conversation}}
     graph = http_request.app.state.graph
+
+    async def _save_assistant_message(response_text: str, fase: str, score: float, frustracion: bool, image_job_id: str | None):
+        supabase_bg = SupabaseClient()
+        try:
+            metadata = {
+                "fase_actual": fase,
+                "comprension_score": score,
+                "frustracion_detectada": frustracion,
+                "images_job_id": image_job_id
+            }
+            await supabase_bg.save_message(
+                user_id=body.id_user,
+                conversation_id=body.id_conversation,
+                role="assistant",
+                message=response_text,
+                metadata=metadata
+            )
+        except Exception as e:
+            logger.error("[chat] Error guardando mensaje del asistente a base de datos: %s", e)
+        finally:
+            await supabase_bg.close()
 
     if not body.stream:
         logger.info("[chat] Modo no-streaming, invocando grafo...")
@@ -175,6 +209,8 @@ async def chat(http_request: Request, body: ChatRequest):
         image_urls_from_state: list[str] = result.get("image_urls") or []
         images_job_id: str | None = result.get("images_job_id")
         images_pending: int = result.get("images_pending") or 0
+        score = result.get("comprension_score", 0.0)
+        frustracion = result.get("frustracion_detectada", False)
 
         response_text = ""
         for m in reversed(messages):
@@ -184,8 +220,11 @@ async def chat(http_request: Request, body: ChatRequest):
 
         parsed = parse_response_to_structured(response_text)
 
-        # Merge images disponibles de inmediato (state + parser) — deduplicado
         all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
+
+        # Guardado en DB en background para no sumar milisegundos a la respuesta del usuario
+        import asyncio
+        asyncio.create_task(_save_assistant_message(response_text, fase, score, frustracion, images_job_id))
 
         elapsed = time.perf_counter() - t_start
         logger.info(
@@ -214,8 +253,10 @@ async def chat(http_request: Request, body: ChatRequest):
         images_job_id: str | None = None
         images_pending: int = 0
         image_urls_from_state: list[str] = []
+        fase = "generativa"
+        score = 0.0
+        frustracion = False
 
-        # Capturamos el state completo con astream_events + on_chain_end para el state final
         async for event in graph.astream_events(
             initial_state,
             config=config,
@@ -240,7 +281,6 @@ async def chat(http_request: Request, body: ChatRequest):
                     yield f"data: {json.dumps({'token': extracted})}\n\n"
 
             elif kind == "on_chain_end":
-                # Capturamos el output del último nodo para extraer images_job_id
                 output = event.get("data", {}).get("output", {})
                 if isinstance(output, dict):
                     job_id = output.get("images_job_id")
@@ -250,10 +290,21 @@ async def chat(http_request: Request, body: ChatRequest):
                     urls = output.get("image_urls") or []
                     if urls:
                         image_urls_from_state = urls
+                    
+                    if "fase_actual" in output:
+                        fase = output["fase_actual"]
+                    if "comprension_score" in output:
+                        score = output["comprension_score"]
+                    if "frustracion_detectada" in output:
+                        frustracion = output["frustracion_detectada"]
 
         full_response = "".join(full_text)
         parsed = parse_response_to_structured(full_response)
         all_images = list(dict.fromkeys(image_urls_from_state + parsed["images"]))
+
+        # Guardar en background
+        import asyncio
+        asyncio.create_task(_save_assistant_message(full_response, fase, score, frustracion, images_job_id))
 
         elapsed = time.perf_counter() - t_start
         logger.info(

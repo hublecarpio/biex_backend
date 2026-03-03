@@ -14,10 +14,11 @@ from app.graph.nodes import (
 from app.graph.edges import evaluate_gatekeeper
 
 
-def build_graph(checkpointer=None):
+def build_graph():
     """
-    Construye y compila el grafo.
-    Si se pasa checkpointer (p. ej. MemorySaver()), el grafo soporta checkpointing.
+    Construye y compila el grafo BIEX.
+    Usa MemorySaver in-process por request, ya que el estado se hidrata 
+    desde las tablas nativas de Supabase antes de ejecutar.
     """
     builder = StateGraph(GraphState)
 
@@ -38,6 +39,5 @@ def build_graph(checkpointer=None):
     builder.add_edge("node_vicario", "__end__")
     builder.add_edge("node_socratico", "__end__")
 
-    # Compilar (opcional: checkpointer para persistir estado por sesión)
-    memory = checkpointer if checkpointer is not None else MemorySaver()
-    return builder.compile(checkpointer=memory)
+    return builder.compile(checkpointer=MemorySaver())
+
