@@ -41,7 +41,7 @@ def _get_llm() -> ChatGoogleGenerativeAI:
     if _llm_instance is None:
         settings = get_settings()
         primary = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-3-flash-preview",
             google_api_key=settings.gemini_api_key,
             temperature=0.7,
         )
@@ -61,7 +61,7 @@ def _get_llm_image_topic() -> ChatGoogleGenerativeAI:
     if _llm_image_topic_instance is None:
         settings = get_settings()
         _llm_image_topic_instance = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             google_api_key=settings.gemini_api_key,
             temperature=0.1,
         )
