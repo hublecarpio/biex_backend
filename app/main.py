@@ -25,6 +25,20 @@ def verify_api_key(request: Request) -> None:
         raise HTTPException(status_code=401, detail="Invalid or missing X-API-Key")
 
 
+# --- Exception Handler para debug ---
+from fastapi.responses import JSONResponse
+import traceback
+
+async def global_exception_handler(request: Request, exc: Exception):
+    error_msg = str(exc)
+    tb = traceback.format_exc()
+    print(f"Error global: {error_msg}\n{tb}")
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error", "error_message": error_msg, "traceback": tb.splitlines()}
+    )
+
+
 # --- Lifespan: Postgres checkpointer + grafo ---
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -48,6 +62,8 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+app.add_exception_handler(Exception, global_exception_handler)
 
 
 @app.get("/health")
