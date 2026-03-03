@@ -1,9 +1,13 @@
 """
 Cliente asíncrono para Supabase Edge Functions usando httpx.
 """
+import logging
+
 import httpx
 from app.core.config import get_settings
 from app.models.schemas import StarterProfile, StarterProfileResponse
+
+logger = logging.getLogger(__name__)
 
 
 class SupabaseClient:
@@ -42,19 +46,24 @@ class SupabaseClient:
         GET a /functions/v1/get-system-prompt.
         Retorna el prompt del sistema como string.
         """
+        logger.info("[supabase] GET get-system-prompt...")
         client = await self._get_client()
         try:
             resp = await client.get("/functions/v1/get-system-prompt")
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, str):
-                return data
-            if isinstance(data, dict) and "prompt" in data:
-                return data["prompt"]
-            if isinstance(data, dict) and "data" in data:
-                return data["data"] if isinstance(data["data"], str) else str(data["data"])
-            return str(data) if data else ""
-        except Exception:
+                result = data
+            elif isinstance(data, dict) and "prompt" in data:
+                result = data["prompt"]
+            elif isinstance(data, dict) and "data" in data:
+                result = data["data"] if isinstance(data["data"], str) else str(data["data"])
+            else:
+                result = str(data) if data else ""
+            logger.info("[supabase] system_prompt obtenido (%s chars).", len(result))
+            return result
+        except Exception as e:
+            logger.warning("[supabase] get_system_prompt falló: %s", e)
             return ""
 
     async def get_starter_profile(self, user_id: str) -> StarterProfile | None:
@@ -62,6 +71,7 @@ class SupabaseClient:
         GET a /functions/v1/get-starter-profile?user_id={user_id}.
         Retorna el perfil inicial del alumno o None.
         """
+        logger.info("[supabase] GET get-starter-profile para user_id=%s...", user_id)
         client = await self._get_client()
         try:
             resp = await client.get(
@@ -71,8 +81,11 @@ class SupabaseClient:
             resp.raise_for_status()
             body = resp.json()
             parsed = StarterProfileResponse(success=True, data=body.get("data", body))
-            return parsed.get_starter_profile()
-        except Exception:
+            profile = parsed.get_starter_profile()
+            logger.info("[supabase] starter_profile=%s", "OK" if profile else "no encontrado")
+            return profile
+        except Exception as e:
+            logger.warning("[supabase] get_starter_profile falló: %s", e)
             return None
 
     async def query_knowledge(self, query: str) -> str:
@@ -81,6 +94,7 @@ class SupabaseClient:
         Payload: {"search_type": "semantic_ai", "query": query}.
         Retorna el valor de la clave "context" de la respuesta JSON, o "" si falla.
         """
+        logger.info("[supabase] POST query-knowledge (query: %s chars)...", len(query))
         client = await self._get_client()
         try:
             resp = await client.post(
@@ -91,7 +105,11 @@ class SupabaseClient:
             data = resp.json()
             if isinstance(data, dict) and "context" in data:
                 ctx = data["context"]
-                return ctx if isinstance(ctx, str) else str(ctx)
+                result = ctx if isinstance(ctx, str) else str(ctx)
+                logger.info("[supabase] RAG context obtenido (%s chars).", len(result))
+                return result
+            logger.info("[supabase] RAG context vacío en la respuesta.")
             return ""
-        except Exception:
+        except Exception as e:
+            logger.warning("[supabase] query_knowledge falló: %s", e)
             return ""

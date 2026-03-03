@@ -2,12 +2,16 @@
 Nodos del grafo BIEX: setup, generativo, vicario, socrático, metacognición.
 """
 import json
+import logging
+
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.core.config import get_settings
 from app.graph.state import GraphState
 from app.services.supabase_api import SupabaseClient
+
+logger = logging.getLogger(__name__)
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
@@ -44,7 +48,10 @@ async def node_setup(state: GraphState) -> dict:
     messages: list = state.get("messages") or []
     user_id: str = state.get("user_id") or ""
 
+    logger.info("[node_setup] Iniciando para user_id=%s", user_id)
+
     if not messages:
+        logger.warning("[node_setup] No hay mensajes en el estado, retornando vacío.")
         return {
             "starter_profile": {},
             "system_prompt": "",
@@ -57,6 +64,7 @@ async def node_setup(state: GraphState) -> dict:
     else:
         user_text = ""
 
+    logger.info("[node_setup] Consultando Supabase (system_prompt, starter_profile, RAG)...")
     client = SupabaseClient()
     try:
         system_prompt = await client.get_system_prompt()
@@ -66,6 +74,14 @@ async def node_setup(state: GraphState) -> dict:
         await client.close()
 
     starter_profile = starter_profile_obj.model_dump() if starter_profile_obj else {}
+    has_rag = bool(rag_context)
+    has_profile = bool(starter_profile)
+    logger.info(
+        "[node_setup] Supabase OK — system_prompt=%s chars | profile=%s | rag=%s",
+        len(system_prompt) if system_prompt else 0,
+        "OK" if has_profile else "vacío",
+        "OK" if has_rag else "vacío",
+    )
 
     return {
         "starter_profile": starter_profile,
@@ -79,6 +95,7 @@ async def node_generativo(state: GraphState) -> dict:
     Genera respuesta educativa usando rag_context.
     Actualiza fase_actual a 'generativa'.
     """
+    logger.info("[node_generativo] Generando respuesta en modo generativo...")
     messages = state.get("messages") or []
     system_prompt = state.get("system_prompt") or ""
     starter_profile = state.get("starter_profile") or {}
@@ -93,6 +110,7 @@ async def node_generativo(state: GraphState) -> dict:
     response = await llm.ainvoke(full_messages)
     content = response.content if hasattr(response, "content") else str(response)
 
+    logger.info("[node_generativo] Respuesta generada (%s chars).", len(content))
     return {
         "messages": [AIMessage(content=content)],
         "fase_actual": "generativa",
@@ -104,6 +122,7 @@ async def node_vicario(state: GraphState) -> dict:
     Modo empatía / pensamiento en voz alta. Usa el perfil, no RAG duro.
     Actualiza fase_actual a 'vicaria'.
     """
+    logger.info("[node_vicario] Generando respuesta en modo vicario (empatía)...")
     messages = state.get("messages") or []
     system_prompt = state.get("system_prompt") or ""
     starter_profile = state.get("starter_profile") or {}
@@ -116,6 +135,7 @@ async def node_vicario(state: GraphState) -> dict:
     response = await llm.ainvoke(full_messages)
     content = response.content if hasattr(response, "content") else str(response)
 
+    logger.info("[node_vicario] Respuesta vicaria generada (%s chars).", len(content))
     return {
         "messages": [AIMessage(content=content)],
         "fase_actual": "vicaria",
@@ -127,6 +147,7 @@ async def node_socratico(state: GraphState) -> dict:
     Solo hace preguntas de pensamiento crítico.
     Actualiza fase_actual a 'socratica'.
     """
+    logger.info("[node_socratico] Generando preguntas socráticas...")
     messages = state.get("messages") or []
     system_prompt = state.get("system_prompt") or ""
     starter_profile = state.get("starter_profile") or {}
@@ -139,6 +160,7 @@ async def node_socratico(state: GraphState) -> dict:
     response = await llm.ainvoke(full_messages)
     content = response.content if hasattr(response, "content") else str(response)
 
+    logger.info("[node_socratico] Preguntas socráticas generadas (%s chars).", len(content))
     return {
         "messages": [AIMessage(content=content)],
         "fase_actual": "socratica",
@@ -150,4 +172,5 @@ async def node_metacognicion(state: GraphState) -> dict:
     Evalúa la sesión al final (nodo de cierre).
     Por ahora solo actualiza fase; luego se puede implementar en background.
     """
+    logger.info("[node_metacognicion] Cerrando sesión con fase metacognición.")
     return {"fase_actual": "metacognicion"}
