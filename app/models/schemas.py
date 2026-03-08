@@ -16,7 +16,7 @@ class ChatRequest(BaseModel):
     mensaje: str
     id_conversation: str
     id_user: str
-    tipo_respuesta: str = "informativa"  # ej. informativa, socratica, etc.
+    tipo_respuesta: str | None = None  # Deprecated: la decisión la toma el supervisor internamente
     stream: bool = False
 
 

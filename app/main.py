@@ -164,6 +164,8 @@ async def chat(http_request: Request, body: ChatRequest):
         elif role == "assistant":
             messages.append(AIMessage(content=content))
 
+    # Limitar historial a los últimos 14 mensajes + el mensaje nuevo = 15 total
+    messages = messages[-14:]
     messages.append(HumanMessage(content=body.mensaje))
 
     initial_state: GraphState = {
