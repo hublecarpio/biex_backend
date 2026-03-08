@@ -336,7 +336,7 @@ async def node_setup(state: GraphState) -> dict:
     finally:
         await client.close()
 
-    starter_profile = starter_profile_obj.model_dump() if starter_profile_obj else {}
+    starter_profile = starter_profile_obj.model_dump(by_alias=True) if starter_profile_obj else {}
     elapsed = time.perf_counter() - t0
     
     logger.info(

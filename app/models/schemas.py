@@ -87,15 +87,29 @@ class GatekeeperEval(BaseModel):
 
 # --- Supabase: Starter Profile ---
 class ProfileData(BaseModel):
-    """Datos de perfil del alumno dentro de starter_profile."""
+    """Datos de perfil del alumno — acepta todos los campos del formulario."""
+    model_config = {"extra": "allow", "populate_by_name": True}
 
     feelings: str = ""
     interests: list = Field(default_factory=list)
     unique_data: str = Field(alias="uniqueData", default="")
+    description: str = ""
     learning_goal: list = Field(alias="learningGoal", default_factory=list)
     learning_style: list = Field(alias="learningStyle", default_factory=list)
-
-    model_config = {"populate_by_name": True}
+    explanation_style: list = Field(alias="explanationStyle", default_factory=list)
+    content_preference: list = Field(alias="contentPreference", default_factory=list)
+    study_time: str = Field(alias="studyTime", default="")
+    challenges: list = Field(default_factory=list)
+    language: str = ""
+    autonomy_level: str = Field(alias="autonomyLevel", default="")
+    learning_goals: str = Field(alias="learningGoals", default="")
+    problem_approach: str = Field(alias="problemApproach", default="")
+    session_duration: str = Field(alias="sessionDuration", default="")
+    knowledge_context: str = Field(alias="knowledgeContext", default="")
+    passionate_topics: list = Field(alias="passionateTopics", default_factory=list)
+    challenge_tolerance: str = Field(alias="challengeTolerance", default="")
+    communication_style: str = Field(alias="communicationStyle", default="")
+    unique_characteristics: str = Field(alias="uniqueCharacteristics", default="")
 
 
 class UserProfile(BaseModel):
