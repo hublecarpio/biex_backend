@@ -187,8 +187,6 @@ async def chat(http_request: Request, body: ChatRequest):
         image_urls_from_state: list[str] = result.get("image_urls") or []
         images_job_id: str | None = result.get("images_job_id")
         images_pending: int = result.get("images_pending") or 0
-        score = result.get("comprension_score", 0.0)
-        frustracion = result.get("frustracion_detectada", False)
 
         response_text = ""
         for m in reversed(messages):
@@ -228,8 +226,6 @@ async def chat(http_request: Request, body: ChatRequest):
         images_pending: int = 0
         image_urls_from_state: list[str] = []
         fase = "generativa"
-        score = 0.0
-        frustracion = False
 
         async for event in graph.astream_events(
             initial_state,
@@ -267,10 +263,6 @@ async def chat(http_request: Request, body: ChatRequest):
                     
                     if "fase_actual" in output:
                         fase = output["fase_actual"]
-                    if "comprension_score" in output:
-                        score = output["comprension_score"]
-                    if "frustracion_detectada" in output:
-                        frustracion = output["frustracion_detectada"]
 
         full_response = "".join(full_text)
         parsed = parse_response_to_structured(full_response)

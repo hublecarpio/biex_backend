@@ -31,9 +31,6 @@ def _log_cache_stats(response, context: str) -> None:
     except Exception:
         pass  # No romper el flujo por un error de logging
 
-# Umbral de comprensión para ir a socrático
-COMPRENSION_THRESHOLD = 85.0
-
 # ---------------------------------------------------------------------------
 # Singleton LLM para el Gatekeeper — misma estrategia que nodes.py
 # ---------------------------------------------------------------------------

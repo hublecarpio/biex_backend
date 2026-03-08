@@ -165,15 +165,6 @@ def _extract_text(content) -> str:
     return str(content)
 
 
-def _build_system_content(system_prompt: str, starter_profile: dict) -> str:
-    """Construye el contenido del system message con prompt y perfil."""
-    profile_str = json.dumps(starter_profile, ensure_ascii=False, indent=2)
-    return f"""{system_prompt}
-
-## Perfil del alumno (usa esto para personalizar)
-{profile_str}
-"""
-
 
 # ---------------------------------------------------------------------------
 # Extracción de temas visuales (auxiliar — usa LLM propio)
