@@ -406,19 +406,23 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) 
     # Gemini Implicit Caching — loggear cache hits para verificar descuentos
     _log_cache_stats(response, fase)
 
-    # Extracción de temas — llamada LLM auxiliar rápida
-    topics = await _extract_image_topics(content)
-
     images_job_id: str | None = None
     images_pending: int = 0
 
-    if topics:
-        # ✅ OPTIMIZACIÓN: las imágenes se generan en background, no bloqueamos la respuesta
-        job_id = await create_job(images_pending=len(topics))
-        asyncio.ensure_future(_generate_images_background(job_id, topics))
-        images_job_id = job_id
-        images_pending = len(topics)
-        logger.info("[%s] Imágenes lanzadas en background — job_id=%s, pending=%s", fase, job_id, images_pending)
+    # Solo extraer temas visuales en generativa
+    # En socrático y vicario no se generan imágenes (ahorro de tokens)
+    if fase == "generativa":
+        topics = await _extract_image_topics(content)
+        if topics:
+            # ✅ OPTIMIZACIÓN: las imágenes se generan en background, no bloqueamos la respuesta
+            job_id = await create_job(images_pending=len(topics))
+            asyncio.ensure_future(_generate_images_background(job_id, topics))
+            images_job_id = job_id
+            images_pending = len(topics)
+            logger.info("[%s] Imágenes lanzadas en background — job_id=%s, pending=%s",
+                        fase, job_id, images_pending)
+    else:
+        logger.info("[%s] Extracción de temas visuales saltada (solo se ejecuta en generativa).", fase)
 
     return {
         "messages": [AIMessage(content=content)],
