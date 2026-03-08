@@ -447,3 +447,108 @@ async def node_metacognicion(state: GraphState) -> dict:
     """Evalúa la sesión al final (nodo de cierre)."""
     logger.info("[node_metacognicion] Cerrando sesión con fase metacognición.")
     return {"fase_actual": "metacognicion"}
+
+
+# ---------------------------------------------------------------------------
+# Nodo supervisor: routing determinístico + carga de protocolo
+# ---------------------------------------------------------------------------
+
+async def supervisor_decide(state: GraphState) -> dict:
+    """Nodo determinístico que decide la siguiente fase pedagógica.
+    También carga el protocolo correcto para la fase decidida.
+
+    No hace llamadas al LLM — toda la lógica es de negocio pura.
+    La carga del protocolo ocurre ACÁ (no en node_setup) porque
+    node_setup no sabe todavía qué fase va a elegir el supervisor.
+    """
+    session = dict(state.get("session_state") or {})
+    gk = state.get("gatekeeper_eval") or {}
+    current_phase = session.get("session_phase", "generativa")
+    is_recalibration = False
+
+    # Regla 1: Frustración alta → vicario (en cualquier fase)
+    if gk.get("frustracion_nivel", 0) >= 6:
+        next_phase = "vicario"
+
+    # Regla 2: Vicario + frustración resuelta → volver a generativa
+    elif current_phase == "vicario" and gk.get("frustracion_nivel", 0) <= 3:
+        next_phase = "generativa"
+
+    # Regla 3: Override manual → socrático
+    elif session.get("gatekeeper_override", False):
+        next_phase = "socratico"
+
+    # Regla 4: Generativa + comprensión alta + suficientes interacciones → socrático
+    elif current_phase == "generativa":
+        history = session.get("comprehension_history", [])
+        ultimos_3 = history[-3:] if history else []
+        promedio = sum(ultimos_3) / len(ultimos_3) if ultimos_3 else 0
+        if promedio >= 70 and session.get("interaction_count", 0) >= 5:
+            next_phase = "socratico"
+        else:
+            next_phase = "generativa"
+
+    # Regla 5: Socrático → metacognición o recalibración
+    elif current_phase == "socratico":
+        if session.get("socratic_correct_answers", 0) >= 3:
+            next_phase = "metacognicion"
+        elif gk.get("comprension_score", 50) < 40 or gk.get("frustracion_nivel", 0) >= 7:
+            next_phase = "generativa"
+            is_recalibration = True
+        else:
+            next_phase = "socratico"
+
+    # Regla 6: Metacognición con rúbrica baja → recalibración
+    elif current_phase == "metacognicion":
+        rubric = session.get("rubric_scores", {})
+        if rubric:
+            promedio_rubric = sum(rubric.values()) / len(rubric)
+            if promedio_rubric < 50:
+                next_phase = "generativa"
+                is_recalibration = True
+            else:
+                next_phase = "metacognicion"
+        else:
+            next_phase = "metacognicion"
+
+    # Default: mantener fase actual
+    else:
+        next_phase = current_phase
+
+    logger.info(
+        "[supervisor] Fase: %s → %s | recalibracion=%s",
+        current_phase, next_phase, is_recalibration,
+    )
+
+    # Cargar el protocolo correcto para la fase decidida.
+    # Si hay recalibración, usar el protocolo especial "recalibracion".
+    protocol_phase = "recalibracion" if is_recalibration else next_phase
+    client = SupabaseClient()
+    try:
+        protocol_content = await client.get_active_protocol(protocol_phase)
+    except Exception as e:
+        logger.warning("[supervisor] Error cargando protocolo '%s': %s", protocol_phase, e)
+        protocol_content = None
+    finally:
+        await client.close()
+
+    # Registrar transición si cambió de fase
+    if next_phase != current_phase:
+        transitions = list(session.get("phase_transitions", []))
+        transitions.append({
+            "from": current_phase,
+            "to": next_phase,
+            "interaction": session.get("interaction_count", 0),
+            "reason": gk.get("recomendacion", "supervisor_rule"),
+            "is_recalibration": is_recalibration,
+        })
+        session["phase_transitions"] = transitions
+
+    session["session_phase"] = next_phase
+
+    return {
+        "fase_actual": next_phase,
+        "session_state": session,
+        "protocol_content": protocol_content or "",
+    }
+
