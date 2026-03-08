@@ -8,7 +8,7 @@ PEDAGOGICAL_CACHE_TTL = 1800  # 30 minutos en segundos
 
 async def get_pedagogical_context_cached(client) -> str:
     """Retorna la documentación pedagógica, cacheada en memoria."""
-    now = time.time()
+    now = time.monotonic()
     if (_pedagogical_cache["content"] is not None
             and (now - _pedagogical_cache["loaded_at"]) < PEDAGOGICAL_CACHE_TTL):
         return _pedagogical_cache["content"]
