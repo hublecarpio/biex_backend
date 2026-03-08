@@ -3,12 +3,13 @@ Lógica del Gatekeeper y enrutado condicional.
 """
 import logging
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.core.config import get_settings
 from app.graph.state import GraphState
 from app.models.schemas import GatekeeperEval
+from app.services.supabase_api import SupabaseClient
 
 logger = logging.getLogger(__name__)
 
@@ -42,59 +43,136 @@ def _get_llm():
 
 
 
-async def evaluate_gatekeeper(state: GraphState) -> str:
+async def _get_gatekeeper_protocol() -> str:
+    """Helper para obtener el protocolo de la DB de manera segura."""
+    client = SupabaseClient()
+    try:
+        protocol = await client.get_active_protocol("gatekeeper")
+        return protocol or "Evalúa la comprensión y frustración del alumno."
+    except Exception as e:
+        logger.warning("[gatekeeper] Error obteniendo protocolo: %s", e)
+        return "Evalúa la comprensión y frustración del alumno."
+    finally:
+        await client.close()
+
+
+def _get_default_gatekeeper_eval(reason: str) -> dict:
+    """Retorna un dict con los valores por defecto cuando el LLM falla."""
+    logger.warning("[gatekeeper] Usando default eval por: %s", reason)
+    return {
+        "gatekeeper_eval": {
+            "comprension_score": 50.0,
+            "frustracion_detectada": False,
+            "frustracion_nivel": 0,
+            "engagement_score": 50.0,
+            "misconceptions": [],
+            "recomendacion": "continuar",
+            "justificacion": f"Fallback por defecto: {reason}",
+        }
+    }
+
+
+async def evaluate_gatekeeper(state: GraphState) -> dict:
     """
-    Evalúa el último mensaje del alumno con LLM estructurado (GatekeeperEval).
-    Retorna el nombre del nodo al que enrutar:
-    - "node_socratico" si comprension_score >= 85
-    - "node_vicario" si frustracion_detectada
-    - "node_generativo" en otro caso
+    Evalúa al alumno (comprensión, frustración, engagement etc.)
+    Retorna estado actualizado con "gatekeeper_eval".
     """
     messages = state.get("messages") or []
     if not messages:
-        logger.info("[gatekeeper] Sin mensajes, enrutando a node_generativo por defecto.")
-        return "node_generativo"
+        return _get_default_gatekeeper_eval("Sin mensajes")
 
+    # Mantenemos lógica de enrutar o fallar si no hay HumanMessage al final
     last = messages[-1]
     if not isinstance(last, HumanMessage):
-        logger.info("[gatekeeper] Último mensaje no es HumanMessage, enrutando a node_generativo.")
-        return "node_generativo"
+        return _get_default_gatekeeper_eval("Último mensaje no es HumanMessage")
 
     user_content = last.content
     text = user_content if isinstance(user_content, str) else str(user_content)
     if not text.strip():
-        logger.info("[gatekeeper] Mensaje vacío, enrutando a node_generativo.")
-        return "node_generativo"
+        return _get_default_gatekeeper_eval("Mensaje vacío")
 
     logger.info("[gatekeeper] Evaluando mensaje del alumno (%s chars)...", len(text))
+
+    # 1. Cargar el protocolo del gatekeeper
+    gk_protocol = await _get_gatekeeper_protocol()
+
+    # 2. Extraer Perfil del alumno
+    starter_profile = state.get("starter_profile") or {}
+    profile_data = starter_profile.get("profile_data") or {}
+    
+    edad = starter_profile.get("age", "No especificada")
+    intereses = profile_data.get("interests", [])
+    estilo = profile_data.get("learningStyle", [])
+
+    # 3. Insights previos (los primeros 5)
+    learner_insights = state.get("learner_insights") or []
+    insights_texto = "\n".join(
+        [f"- {i.get('insight', '')} (confianza: {i.get('confidence', '')})" for i in learner_insights[:5]]
+    ) if learner_insights else "Ninguno"
+
+    # 4. Estado de sesión
+    session_state = state.get("session_state") or {}
+    fase_actual = session_state.get("session_phase", "generativa")
+    interacciones = session_state.get("interaction_count", 0)
+    
+    comp_history = session_state.get("comprehension_history", [])[-5:]
+    zdp = session_state.get("zdp_level", 50.0)
+    frust_history = session_state.get("frustration_history", [])[-3:]
+
+    # 5. Últimos 5 mensajes
+    last_5_msgs = messages[-5:]
+    historial_str = ""
+    for m in last_5_msgs:
+        if isinstance(m, HumanMessage):
+            rol = "ALUMNO"
+        elif isinstance(m, AIMessage):
+            rol = "SOFÍA"
+        else:
+            rol = "SISTEMA"
+        ct = m.content if isinstance(m.content, str) else str(m.content)
+        historial_str += f"{rol}: {ct}\n\n"
+
+    # Construir prompt
+    prompt = (
+        f"{gk_protocol}\n\n"
+        "## Perfil del Alumno\n"
+        f"- Edad: {edad}\n"
+        f"- Intereses: {intereses}\n"
+        f"- Estilo de aprendizaje: {estilo}\n\n"
+        "## Insights Previos (hasta 5)\n"
+        f"{insights_texto}\n\n"
+        "## Estado de Sesión\n"
+        f"- Fase actual: {fase_actual}\n"
+        f"- Interacciones: {interacciones}\n"
+        f"- Historial Comprensión (últimos 5): {comp_history}\n"
+        f"- ZDP Nivel: {zdp}\n"
+        f"- Historial Frustración (últimos 3): {frust_history}\n\n"
+        "## Últimos 5 mensajes de la conversación\n"
+        f"{historial_str}\n\n"
+        "Teniendo en cuenta todo este contexto, evalúa el último mensaje del alumno y "
+        "devuelve una evaluación estructurada estructurada en JSON usando el esquema solicitado."
+    )
 
     llm = _get_llm()
     structured_llm = llm.with_structured_output(GatekeeperEval)
 
-    prompt = (
-        "Evalúa el siguiente mensaje de un alumno en una sesión de tutoría. "
-        "Indica: (1) comprension_score: puntuación de 0 a 100 según si entendió el tema; "
-        "(2) frustracion_detectada: true si detectas frustración, confusión o malestar.\n\n"
-        f"Mensaje del alumno:\n{text}"
-    )
     try:
         eval_result: GatekeeperEval = await structured_llm.ainvoke(prompt)
     except Exception as e:
-        logger.warning("[gatekeeper] Error evaluando con LLM (%s), enrutando a node_generativo.", e)
-        return "node_generativo"
+        logger.error("[gatekeeper] Falló el LLM durante la evaluación: %s", e)
+        return _get_default_gatekeeper_eval("Fallo LLM")
 
     logger.info(
-        "[gatekeeper] Evaluación: comprensión=%.1f | frustración=%s",
+        "[gatekeeper] Evaluación exitosa: comprensión=%.1f | frustración=%s | engagement=%.1f | rec=%s",
         eval_result.comprension_score,
         eval_result.frustracion_detectada,
+        eval_result.engagement_score,
+        eval_result.recomendacion,
     )
 
-    if eval_result.comprension_score >= COMPRENSION_THRESHOLD:
-        logger.info("[gatekeeper] -> node_socratico (comprensión alta)")
-        return "node_socratico"
-    if eval_result.frustracion_detectada:
-        logger.info("[gatekeeper] -> node_vicario (frustración detectada)")
-        return "node_vicario"
+    try:
+        resultado = eval_result.model_dump()
+    except AttributeError:
+        resultado = eval_result.dict()
 
-    logger.info("[gatekeeper] -> node_generativo")
-    return "node_generativo"
+    return {"gatekeeper_eval": resultado}
