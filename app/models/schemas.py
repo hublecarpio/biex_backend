@@ -78,6 +78,11 @@ class GatekeeperEval(BaseModel):
 
     comprension_score: float = Field(ge=0.0, le=100.0, description="Puntuación de comprensión 0-100")
     frustracion_detectada: bool = Field(description="Si se detecta frustración en el mensaje")
+    frustracion_nivel: int = Field(ge=0, le=10, description="Nivel de frustración 0-10")
+    engagement_score: float = Field(ge=0.0, le=100.0, description="Puntuación de engagement 0-100")
+    misconceptions: list[str] = Field(default_factory=list, description="Lista de malentendidos detectados")
+    recomendacion: Literal['continuar', 'intensificar', 'simplificar', 'vicario', 'socratico', 'metacognicion'] = Field(description="Recomendación pedagógica o táctica a seguir")
+    justificacion: str = Field(description="Breve justificación de los scores y la recomendación")
 
 
 # --- Supabase: Starter Profile ---

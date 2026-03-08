@@ -185,3 +185,144 @@ class SupabaseClient:
         except Exception as e:
             logger.warning("[supabase] save_message falló: %s", e)
             return None
+
+    async def get_session_state(self, conversation_id: str) -> dict | None:
+        """GET /rest/v1/session_state?conversation_id=eq.{conversation_id}&limit=1"""
+        logger.info("[supabase] GET session_state para conversation_id=%s...", conversation_id)
+        client = await self._get_service_client()
+        try:
+            resp = await client.get(
+                "/rest/v1/session_state",
+                params={"conversation_id": f"eq.{conversation_id}", "limit": "1"}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0]
+            return None
+        except Exception as e:
+            logger.warning("[supabase] get_session_state falló: %s", e)
+            return None
+
+    async def save_session_state(self, session_data: dict) -> None:
+        """POST /rest/v1/session_state con Prefer: resolution=merge-duplicates"""
+        conversation_id = session_data.get("conversation_id")
+        logger.info("[supabase] POST session_state para conversation_id=%s...", conversation_id)
+        client = await self._get_service_client()
+        try:
+            resp = await client.post(
+                "/rest/v1/session_state",
+                headers={"Prefer": "resolution=merge-duplicates"},
+                json=session_data
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[supabase] save_session_state falló: %s", e)
+
+    async def get_active_protocol(self, phase: str) -> str | None:
+        """GET /rest/v1/protocols?phase=eq.{phase}&is_active=eq.true&order=version.desc&limit=1"""
+        logger.info("[supabase] GET active protocol para phase=%s...", phase)
+        client = await self._get_client()
+        try:
+            resp = await client.get(
+                "/rest/v1/protocols",
+                params={
+                    "phase": f"eq.{phase}",
+                    "is_active": "eq.true",
+                    "order": "version.desc",
+                    "limit": "1"
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                return data[0].get("content")
+            return None
+        except Exception as e:
+            logger.warning("[supabase] get_active_protocol falló: %s", e)
+            return None
+
+    async def save_gatekeeper_evaluation(self, evaluation: dict) -> None:
+        """POST /rest/v1/gatekeeper_evaluations"""
+        logger.info("[supabase] POST gatekeeper_evaluations...")
+        client = await self._get_service_client()
+        try:
+            resp = await client.post(
+                "/rest/v1/gatekeeper_evaluations",
+                json=evaluation
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[supabase] save_gatekeeper_evaluation falló: %s", e)
+
+    async def get_pedagogical_docs(self) -> str:
+        """GET /rest/v1/pedagogical_docs?is_active=eq.true&order=sort_order.asc"""
+        logger.info("[supabase] GET pedagogical_docs...")
+        client = await self._get_client()
+        try:
+            resp = await client.get(
+                "/rest/v1/pedagogical_docs",
+                params={"is_active": "eq.true", "order": "sort_order.asc"}
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data and isinstance(data, list):
+                docs = []
+                for doc in data:
+                    title = doc.get("title", "Doc")
+                    content = doc.get("content", "")
+                    docs.append(f"## {title}\n{content}\n\n")
+                return "".join(docs)
+            return ""
+        except Exception as e:
+            logger.warning("[supabase] get_pedagogical_docs falló: %s", e)
+            return ""
+
+    async def get_learner_insights(self, user_id: str) -> list:
+        """GET /rest/v1/learner_insights?user_id=eq.{user_id}&order=confidence.desc&limit=20"""
+        logger.info("[supabase] GET learner_insights para user_id=%s...", user_id)
+        client = await self._get_service_client()
+        try:
+            resp = await client.get(
+                "/rest/v1/learner_insights",
+                params={
+                    "user_id": f"eq.{user_id}",
+                    "order": "confidence.desc",
+                    "limit": "20"
+                }
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if data and isinstance(data, list):
+                return data
+            return []
+        except Exception as e:
+            logger.warning("[supabase] get_learner_insights falló: %s", e)
+            return []
+
+    async def save_learner_insight(self, insight: dict) -> None:
+        """POST /rest/v1/learner_insights"""
+        logger.info("[supabase] POST learner_insights...")
+        client = await self._get_service_client()
+        try:
+            resp = await client.post(
+                "/rest/v1/learner_insights",
+                json=insight
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[supabase] save_learner_insight falló: %s", e)
+
+    async def update_conversation_phase(self, conversation_id: str, phase: str) -> None:
+        """PATCH /rest/v1/conversations?id=eq.{conversation_id}"""
+        logger.info("[supabase] PATCH conversations para conversation_id=%s, phase=%s...", conversation_id, phase)
+        client = await self._get_service_client()
+        try:
+            resp = await client.patch(
+                "/rest/v1/conversations",
+                params={"id": f"eq.{conversation_id}"},
+                json={"current_phase": phase}
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[supabase] update_conversation_phase falló: %s", e)

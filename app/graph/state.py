@@ -12,6 +12,12 @@ class GraphState(TypedDict, total=False):
 
     messages: Annotated[list, add_messages]
     user_id: str
+    conversation_id: str
+    session_state: dict
+    protocol_content: str
+    gatekeeper_eval: dict
+    pedagogical_context: str
+    learner_insights: list
     starter_profile: dict
     system_prompt: str
     fase_actual: str
