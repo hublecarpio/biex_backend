@@ -385,68 +385,109 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) 
 
 
 # ---------------------------------------------------------------------------
+# Helper: construcción del prompt optimizado para Gemini Implicit Caching
+# ---------------------------------------------------------------------------
+
+def build_response_messages(state: GraphState) -> list[BaseMessage]:
+    """Construye la lista de mensajes para el LLM con orden óptimo para caching.
+
+    Orden:
+      1. pedagogical_context  — estático, máxima reutilización en caché
+      2. system_prompt + protocolo de fase — semi-estático
+      3. Perfil del alumno + estado de sesión + RAG — dinámico
+      4. Historial de conversación (últimos 15 mensajes)
+    """
+    profile = state.get("starter_profile") or {}
+    profile_data = profile.get("profile_data") or {}
+    if isinstance(profile_data, str):
+        try:
+            profile_data = json.loads(profile_data)
+        except Exception:
+            profile_data = {}
+
+    session = state.get("session_state") or {}
+    insights = state.get("learner_insights") or []
+    gk = state.get("gatekeeper_eval") or {}
+
+    # 1. Bloque estático (para implicit caching)
+    static = state.get("pedagogical_context") or ""
+
+    # 2. Bloque semi-estático
+    semi_static = (
+        f"{state.get('system_prompt', '')}\n\n"
+        f"--- PROTOCOLO DE FASE: {state.get('fase_actual', 'generativa')} ---\n"
+        f"{state.get('protocol_content', '')}"
+    )
+
+    # 3. Bloque dinámico
+    if insights:
+        insights_lines = [
+            f"- {i.get('insight_type', '')}: {i.get('insight_value', '')}"  
+            for i in insights[:5]
+        ]
+        insights_text = "\n".join(insights_lines)
+    else:
+        insights_text = "Primera sesión, sin observaciones previas."
+
+    dynamic = (
+        f"--- PERFIL DEL ALUMNO ---\n"
+        f"Descripción: {profile_data.get('description', '')}\n"
+        f"Edad: {profile.get('age', 'desconocida')}\n"
+        f"Intereses: {', '.join(profile_data.get('interests', []))}\n"
+        f"Dato único: {profile_data.get('uniqueData', '')}\n"
+        f"Estilo de aprendizaje: {', '.join(profile_data.get('learningStyle', []))}\n"
+        f"Preferencia de explicación: {', '.join(profile_data.get('explanationStyle', []))}\n\n"
+        f"--- OBSERVACIONES DE SESIONES ANTERIORES ---\n"
+        f"{insights_text}\n\n"
+        f"--- ESTADO DE ESTA SESIÓN ---\n"
+        f"Fase: {session.get('session_phase', 'generativa')}\n"
+        f"Interacción #{session.get('interaction_count', 0) + 1}\n"
+        f"Comprensión actual: {gk.get('comprension_score', 'sin evaluar')}\n"
+        f"Engagement: {gk.get('engagement_score', 'sin evaluar')}\n"
+        f"Tema actual: {session.get('current_topic', 'por definir')}\n"
+    )
+
+    rag = state.get("rag_context") or ""
+    if rag:
+        dynamic += f"\n--- CONTENIDO EDUCATIVO RELEVANTE ---\n{rag}\n"
+
+    system_content = static + "\n\n" + semi_static + "\n\n" + dynamic
+
+    # Historial limitado a los últimos 15 mensajes
+    history = list(state.get("messages") or [])[-15:]
+    return [SystemMessage(content=system_content)] + history
+
+
+# ---------------------------------------------------------------------------
 # Nodos de respuesta
 # ---------------------------------------------------------------------------
 
 async def node_generativo(state: GraphState) -> dict:
-    """Genera respuesta educativa usando rag_context. Fase: generativa."""
+    """Genera respuesta educativa. Fase: generativa."""
     logger.info("[node_generativo] Generando respuesta...")
-    messages = state.get("messages") or []
-    system_prompt = state.get("system_prompt") or ""
-    starter_profile = state.get("starter_profile") or {}
-    rag_context = state.get("rag_context") or ""
-
-    system_content = _build_system_content(system_prompt, starter_profile)
-    if rag_context:
-        system_content += f"\n\n## Contexto de conocimiento (úsalo para fundamentar tu respuesta)\n{rag_context}"
-
-    llm = _get_llm()
-    full_messages: list[BaseMessage] = [SystemMessage(content=system_content)] + list(messages)
-    return await _invoke_with_images(llm, full_messages, "generativa")
+    full_messages = build_response_messages(state)
+    return await _invoke_with_images(_get_llm(), full_messages, "generativa")
 
 
 async def node_vicario(state: GraphState) -> dict:
     """Modo empatía / pensamiento en voz alta. Fase: vicaria."""
-    logger.info("[node_vicario] Generando respuesta vicaria (empatía)...")
-    messages = state.get("messages") or []
-    system_prompt = state.get("system_prompt") or ""
-    starter_profile = state.get("starter_profile") or {}
-
-    system_content = _build_system_content(system_prompt, starter_profile)
-    system_content += (
-        "\n\nInstrucción: Responde en modo vicario: muestra empatía, piensa en voz alta "
-        "y acompaña al alumno sin dar la respuesta directa. No uses el contexto RAG de forma "
-        "rígida; prioriza el estado emocional y el perfil del alumno."
-    )
-
-    llm = _get_llm()
-    full_messages: list[BaseMessage] = [SystemMessage(content=system_content)] + list(messages)
-    return await _invoke_with_images(llm, full_messages, "vicaria")
+    logger.info("[node_vicario] Generando respuesta vicaria...")
+    full_messages = build_response_messages(state)
+    return await _invoke_with_images(_get_llm(), full_messages, "vicaria")
 
 
 async def node_socratico(state: GraphState) -> dict:
-    """Solo hace preguntas de pensamiento crítico. Fase: socratica."""
+    """Preguntas de pensamiento crítico. Fase: socratica."""
     logger.info("[node_socratico] Generando preguntas socráticas...")
-    messages = state.get("messages") or []
-    system_prompt = state.get("system_prompt") or ""
-    starter_profile = state.get("starter_profile") or {}
-
-    system_content = _build_system_content(system_prompt, starter_profile)
-    system_content += (
-        "\n\nInstrucción: Responde únicamente con una o dos preguntas socráticas para guiar "
-        "el pensamiento crítico del alumno. No des explicaciones largas ni la respuesta; "
-        "solo preguntas que le hagan reflexionar."
-    )
-
-    llm = _get_llm()
-    full_messages: list[BaseMessage] = [SystemMessage(content=system_content)] + list(messages)
-    return await _invoke_with_images(llm, full_messages, "socratica")
+    full_messages = build_response_messages(state)
+    return await _invoke_with_images(_get_llm(), full_messages, "socratica")
 
 
 async def node_metacognicion(state: GraphState) -> dict:
-    """Evalúa la sesión al final (nodo de cierre)."""
-    logger.info("[node_metacognicion] Cerrando sesión con fase metacognición.")
-    return {"fase_actual": "metacognicion"}
+    """Cierre de sesión con reflexión metacognitiva."""
+    logger.info("[node_metacognicion] Ejecutando nodo de metacognición...")
+    full_messages = build_response_messages(state)
+    return await _invoke_with_images(_get_llm(), full_messages, "metacognicion")
 
 
 # ---------------------------------------------------------------------------
