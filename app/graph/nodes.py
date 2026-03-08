@@ -52,6 +52,21 @@ def _log_cache_stats(response, context: str) -> None:
 # ---------------------------------------------------------------------------
 _llm_instance: ChatGoogleGenerativeAI | None = None
 _llm_image_topic_instance: ChatGoogleGenerativeAI | None = None
+_rag_classifier_llm: ChatGoogleGenerativeAI | None = None
+
+
+def _get_rag_classifier_llm() -> ChatGoogleGenerativeAI:
+    """Retorna la instancia singleton del clasificador RAG."""
+    global _rag_classifier_llm
+    if _rag_classifier_llm is None:
+        settings = get_settings()
+        _rag_classifier_llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=settings.gemini_api_key,
+            temperature=0,
+        )
+        logger.info("[llm] Instancia LLM clasificador RAG creada (singleton).")
+    return _rag_classifier_llm
 
 
 def _get_llm() -> ChatGoogleGenerativeAI:
@@ -234,12 +249,7 @@ respuesta corta (sí/no/ok), o meta-conversación.
 Mensaje: {message}"""
 
     try:
-        settings = get_settings()
-        llm = ChatGoogleGenerativeAI(
-            model="gemini-2.5-flash",
-            google_api_key=settings.gemini_api_key,
-            temperature=0,
-        )
+        llm = _get_rag_classifier_llm()
         response = await llm.ainvoke(prompt)
         content = _extract_text(response.content if hasattr(response, "content") else response)
         
