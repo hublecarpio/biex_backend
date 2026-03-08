@@ -10,6 +10,9 @@ from app.graph.nodes import (
     node_generativo,
     node_vicario,
     node_socratico,
+    node_metacognicion,
+    node_persist,
+    supervisor_decide,
 )
 from app.graph.edges import evaluate_gatekeeper
 
@@ -17,27 +20,49 @@ from app.graph.edges import evaluate_gatekeeper
 def build_graph():
     """
     Construye y compila el grafo BIEX.
-    Usa MemorySaver in-process por request, ya que el estado se hidrata 
-    desde las tablas nativas de Supabase antes de ejecutar.
+
+    Flujo:
+      node_setup → evaluate_gatekeeper → supervisor_decide
+        → [generativo | vicario | socratico | metacognicion]
+        → node_persist → END
+
+    Usa MemorySaver in-process por request; el estado real se lee y escribe
+    desde las tablas nativas de Supabase (session_state, gatekeeper_evaluations, etc.).
     """
-    builder = StateGraph(GraphState)
+    workflow = StateGraph(GraphState)
 
     # Nodos
-    builder.add_node("node_setup", node_setup)
-    builder.add_node("node_generativo", node_generativo)
-    builder.add_node("node_vicario", node_vicario)
-    builder.add_node("node_socratico", node_socratico)
+    workflow.add_node("node_setup", node_setup)
+    workflow.add_node("evaluate_gatekeeper", evaluate_gatekeeper)
+    workflow.add_node("supervisor_decide", supervisor_decide)
+    workflow.add_node("node_generativo", node_generativo)
+    workflow.add_node("node_vicario", node_vicario)
+    workflow.add_node("node_socratico", node_socratico)
+    workflow.add_node("node_metacognicion", node_metacognicion)
+    workflow.add_node("node_persist", node_persist)
 
-    # Entrada
-    builder.set_entry_point("node_setup")
+    # Flujo lineal: setup → gatekeeper → supervisor
+    workflow.set_entry_point("node_setup")
+    workflow.add_edge("node_setup", "evaluate_gatekeeper")
+    workflow.add_edge("evaluate_gatekeeper", "supervisor_decide")
 
-    # node_setup -> gatekeeper (condicional)
-    builder.add_conditional_edges("node_setup", evaluate_gatekeeper)
+    # Routing determinístico desde supervisor según fase_actual
+    workflow.add_conditional_edges(
+        "supervisor_decide",
+        lambda state: state["fase_actual"],
+        {
+            "generativa": "node_generativo",
+            "vicario": "node_vicario",
+            "socratico": "node_socratico",
+            "metacognicion": "node_metacognicion",
+        },
+    )
 
-    # Rutas del gatekeeper hacia cada nodo de respuesta
-    builder.add_edge("node_generativo", "__end__")
-    builder.add_edge("node_vicario", "__end__")
-    builder.add_edge("node_socratico", "__end__")
+    # Todos los nodos de respuesta → persist → end
+    workflow.add_edge("node_generativo", "node_persist")
+    workflow.add_edge("node_vicario", "node_persist")
+    workflow.add_edge("node_socratico", "node_persist")
+    workflow.add_edge("node_metacognicion", "node_persist")
+    workflow.add_edge("node_persist", "__end__")
 
-    return builder.compile(checkpointer=MemorySaver())
-
+    return workflow.compile(checkpointer=MemorySaver())
