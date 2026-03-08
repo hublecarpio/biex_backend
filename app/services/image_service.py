@@ -51,6 +51,17 @@ async def generate_images(temas: list[dict]) -> list[str]:
             urls = [item for item in data if isinstance(item, str)]
         elif isinstance(data, dict):
             urls = data.get("urls") or data.get("images") or []
+            # Fallback: si n8n retorna URLs en campo "response" (formato legacy)
+            if not urls and data.get("response"):
+                import re
+                found = re.findall(
+                    r'https://minio\.biexedu\.com/n8nback/[A-Z0-9]+\.png',
+                    str(data["response"]),
+                    re.IGNORECASE
+                )
+                if found:
+                    urls = found
+                    logger.info("[image_service] URLs extraídas de campo 'response' (formato legacy): %s", len(urls))
             urls = [u for u in urls if isinstance(u, str)]
         else:
             urls = []
