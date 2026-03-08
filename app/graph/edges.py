@@ -12,6 +12,24 @@ from app.models.schemas import GatekeeperEval
 from app.services.supabase_api import SupabaseClient
 
 logger = logging.getLogger(__name__)
+cache_logger = logging.getLogger("cache_monitor")
+
+
+def _log_cache_stats(response, context: str) -> None:
+    """Loggea las estadísticas de Gemini Implicit Caching del response."""
+    try:
+        metadata = getattr(response, "usage_metadata", None)
+        if metadata is None:
+            return
+        cached = getattr(metadata, "cached_content_token_count", 0) or 0
+        total = getattr(metadata, "prompt_token_count", 0) or 0
+        ratio = cached / total if total else 0
+        cache_logger.info(
+            "CACHE_STATS | context=%s | cached=%s | total_input=%s | ratio=%.2f%%",
+            context, cached, total, ratio * 100,
+        )
+    except Exception:
+        pass  # No romper el flujo por un error de logging
 
 # Umbral de comprensión para ir a socrático
 COMPRENSION_THRESHOLD = 85.0
@@ -154,13 +172,15 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
     )
 
     llm = _get_llm()
-    structured_llm = llm.with_structured_output(GatekeeperEval)
 
     try:
-        eval_result: GatekeeperEval = await structured_llm.ainvoke(prompt)
+        raw_result = await llm.with_structured_output(GatekeeperEval, include_raw=True).ainvoke(prompt)
+        eval_result: GatekeeperEval = raw_result["parsed"]
+        _log_cache_stats(raw_result.get("raw"), "gatekeeper")
     except Exception as e:
         logger.error("[gatekeeper] Falló el LLM durante la evaluación: %s", e)
         return _get_default_gatekeeper_eval("Fallo LLM")
+
 
     logger.info(
         "[gatekeeper] Evaluación exitosa: comprensión=%.1f | frustración=%s | engagement=%.1f | rec=%s",

@@ -26,6 +26,24 @@ from app.services.supabase_api import SupabaseClient
 from app.utils.cache import get_pedagogical_context_cached
 
 logger = logging.getLogger(__name__)
+cache_logger = logging.getLogger("cache_monitor")
+
+
+def _log_cache_stats(response, context: str) -> None:
+    """Loggea las estadísticas de Gemini Implicit Caching del response."""
+    try:
+        metadata = getattr(response, "usage_metadata", None)
+        if metadata is None:
+            return
+        cached = getattr(metadata, "cached_content_token_count", 0) or 0
+        total = getattr(metadata, "prompt_token_count", 0) or 0
+        ratio = cached / total if total else 0
+        cache_logger.info(
+            "CACHE_STATS | context=%s | cached=%s | total_input=%s | ratio=%.2f%%",
+            context, cached, total, ratio * 100,
+        )
+    except Exception:
+        pass  # No romper el flujo por un error de logging
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +378,9 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) 
     content = _extract_text(response.content if hasattr(response, "content") else response)
     llm_elapsed = time.perf_counter() - t0
     logger.info("[%s] LLM respondió en %.2fs — %s chars.", fase, llm_elapsed, len(content))
+
+    # Gemini Implicit Caching — loggear cache hits para verificar descuentos
+    _log_cache_stats(response, fase)
 
     # Extracción de temas — llamada LLM auxiliar rápida
     topics = await _extract_image_topics(content)
