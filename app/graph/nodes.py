@@ -593,3 +593,88 @@ async def supervisor_decide(state: GraphState) -> dict:
         "protocol_content": protocol_content or "",
     }
 
+
+# ---------------------------------------------------------------------------
+# Nodo de persistencia: guarda estado al final de cada turno
+# ---------------------------------------------------------------------------
+
+async def node_persist(state: GraphState) -> dict:
+    """Persiste el estado de la sesión y la evaluación del gatekeeper.
+
+    Se ejecuta DESPUÉS de cada nodo de respuesta.
+    Nunca rompe el chat — cualquier error de persistencia se loggea y se ignora.
+    """
+    session = dict(state.get("session_state") or {})
+    gk = state.get("gatekeeper_eval") or {}
+
+    # Actualizar contadores
+    session["interaction_count"] = session.get("interaction_count", 0) + 1
+    session["session_phase"] = state.get("fase_actual", "generativa")
+
+    # Historiales de comprensión (últimos 20)
+    if gk.get("comprension_score") is not None:
+        h = list(session.get("comprehension_history", []))
+        h.append(gk["comprension_score"])
+        session["comprehension_history"] = h[-20:]
+        session["current_comprehension"] = gk["comprension_score"]
+
+    # Historial de frustración (últimos 20)
+    if gk.get("frustracion_nivel") is not None:
+        h = list(session.get("frustration_history", []))
+        h.append(gk["frustracion_nivel"])
+        session["frustration_history"] = h[-20:]
+
+    # Historial de engagement (últimos 20)
+    if gk.get("engagement_score") is not None:
+        h = list(session.get("engagement_history", []))
+        h.append(gk["engagement_score"])
+        session["engagement_history"] = h[-20:]
+
+    # Misconceptions acumulados (últimos 10 únicos)
+    if gk.get("misconceptions"):
+        existing = list(session.get("misconceptions", []))
+        for m in gk["misconceptions"]:
+            if m not in existing:
+                existing.append(m)
+        session["misconceptions"] = existing[-10:]
+
+    # Contador de triggers vicario
+    if state.get("fase_actual") == "vicario":
+        session["vicario_triggers"] = session.get("vicario_triggers", 0) + 1
+
+    client = SupabaseClient()
+    try:
+        await asyncio.gather(
+            client.save_session_state(session),
+            client.save_gatekeeper_evaluation({
+                "conversation_id": state.get("conversation_id"),
+                "user_id": state.get("user_id"),
+                "comprehension_score": gk.get("comprension_score", 0),
+                "frustration_detected": gk.get("frustracion_detectada", False),
+                "frustration_level": gk.get("frustracion_nivel", 0),
+                "engagement_score": gk.get("engagement_score", 0),
+                "misconceptions": gk.get("misconceptions", []),
+                "recommendation": gk.get("recomendacion", "continuar"),
+                "justification": gk.get("justificacion", ""),
+                "current_phase": state.get("fase_actual", "generativa"),
+                "interaction_number": session["interaction_count"],
+                "raw_response": gk,
+            }),
+            client.update_conversation_phase(
+                state.get("conversation_id"),
+                state.get("fase_actual", "generativa"),
+            ),
+        )
+        logger.info(
+            "[node_persist] Estado guardado — interacción #%s, fase=%s",
+            session["interaction_count"],
+            session["session_phase"],
+        )
+    except Exception as e:
+        logger.error("[node_persist] Error persistiendo estado: %s", e)
+    finally:
+        await client.close()
+
+    return {}
+
+
