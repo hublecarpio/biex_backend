@@ -500,7 +500,13 @@ def build_response_messages(state: GraphState) -> list[BaseMessage]:
     if rag:
         dynamic += f"\n--- CONTENIDO EDUCATIVO RELEVANTE ---\n{rag}\n"
 
-    system_content = static + "\n\n" + semi_static + "\n\n" + dynamic
+    system_content = (
+        static
+        + "\n\n===== FIN DOCUMENTACIÓN PEDAGÓGICA =====\n\n"
+        + semi_static
+        + "\n\n===== CONTEXTO DE ESTA INTERACCIÓN =====\n\n"
+        + dynamic
+    )
 
     # Historial limitado a los últimos 15 mensajes
     history = list(state.get("messages") or [])[-15:]
