@@ -122,7 +122,8 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
     # 3. Insights previos (los primeros 5)
     learner_insights = state.get("learner_insights") or []
     insights_texto = "\n".join(
-        [f"- {i.get('insight', '')} (confianza: {i.get('confidence', '')})" for i in learner_insights[:5]]
+        [f"- {i.get('insight_type', '')}: {i.get('insight_value', '')} (confianza: {i.get('confidence', '')})"
+         for i in learner_insights[:5]]
     ) if learner_insights else "Ninguno"
 
     # 4. Estado de sesión
