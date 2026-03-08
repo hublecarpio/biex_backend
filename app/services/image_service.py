@@ -9,6 +9,14 @@ from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 
+_image_client: httpx.AsyncClient | None = None
+
+def _get_image_client() -> httpx.AsyncClient:
+    global _image_client
+    if _image_client is None or _image_client.is_closed:
+        _image_client = httpx.AsyncClient(timeout=120.0)  # 2 minutos
+    return _image_client
+
 
 async def generate_images(temas: list[dict]) -> list[str]:
     """
@@ -33,10 +41,10 @@ async def generate_images(temas: list[dict]) -> list[str]:
     logger.info("[image_service] Llamando webhook con %s tema(s): %s", len(temas), [t.get("tema") for t in temas])
 
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            resp = await client.post(webhook_url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
+        client = _get_image_client()
+        resp = await client.post(webhook_url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
 
         # El webhook puede retornar {"urls": [...]} o directamente [...]
         if isinstance(data, list):
