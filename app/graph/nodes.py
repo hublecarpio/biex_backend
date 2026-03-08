@@ -316,11 +316,12 @@ async def node_setup(state: GraphState) -> dict:
         pedagogical_context = await get_pedagogical_context_cached(client)
 
         # d) Obtener el resto en paralelo
-        system_prompt_raw, starter_profile_obj, session_state, learner_insights = await asyncio.gather(
+        system_prompt_raw, starter_profile_obj, session_state, learner_insights, needs_rag = await asyncio.gather(
             _get_system_prompt_cached(client),
             client.get_starter_profile(user_id),
             client.get_session_state(conversation_id),
             client.get_learner_insights(user_id),
+            should_query_rag(user_text, client),
         )
 
         # e) Si session_state no existe, crear defaults
@@ -350,7 +351,6 @@ async def node_setup(state: GraphState) -> dict:
 
         # g) RAG condicional
         rag_context = ""
-        needs_rag = await should_query_rag(user_text, client)
         if needs_rag:
             logger.info("[node_setup] Clasificador decidió MANTENER RAG para: '%s...'", user_text[:30].replace('\n', ' '))
             rag_context = await client.query_knowledge(user_text)
