@@ -240,13 +240,27 @@ async def should_query_rag(message: str, client: SupabaseClient) -> bool:
     if not message.strip():
         return False
         
-    prompt = f"""Clasificá este mensaje de un alumno en una tutoría educativa.
-Respondé SOLO con un JSON: {{"needs_rag": true}} o {{"needs_rag": false}}
-Respondé true SOLO si el alumno está haciendo una pregunta sobre
-contenido educativo de una materia o necesita información factual.
-Respondé false si es: saludo, despedida, expresión emocional,
-respuesta corta (sí/no/ok), o meta-conversación.
-Mensaje: {message}"""
+    prompt = f'''Clasificá este mensaje de un alumno en una tutoría educativa.
+Respondé SOLO con JSON: {{"needs_rag": true}} o {{"needs_rag": false}}
+
+Respondé true si el alumno pregunta sobre contenido educativo de una materia
+o necesita información factual para resolver un problema.
+Respondé false si es saludo, despedida, expresión emocional, respuesta corta,
+meta-conversación, o cualquier mensaje que no requiera buscar contenido.
+
+Ejemplos:
+- "¿qué es la fotosíntesis?" → {{"needs_rag": true}}
+- "hola sofía" → {{"needs_rag": false}}
+- "no entiendo nada" → {{"needs_rag": false}}
+- "¿cuáles son las partes de la célula?" → {{"needs_rag": true}}
+- "sí, creo que sí" → {{"needs_rag": false}}
+- "¿y eso cómo se relaciona con la mitosis?" → {{"needs_rag": true}}
+- "me aburro" → {{"needs_rag": false}}
+- "explicame las leyes de newton" → {{"needs_rag": true}}
+- "gracias, entendí" → {{"needs_rag": false}}
+- "¿qué pasó en la revolución francesa?" → {{"needs_rag": true}}
+
+Mensaje: "{message}"'''
 
     try:
         llm = _get_rag_classifier_llm()
