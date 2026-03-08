@@ -2,6 +2,7 @@
 Lógica del Gatekeeper y enrutado condicional.
 """
 import logging
+import time
 
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -58,14 +59,30 @@ def _get_llm():
 
 
 
+_gatekeeper_protocol_cache: str | None = None
+_gatekeeper_protocol_cached_at: float = 0.0
+_GATEKEEPER_PROTOCOL_TTL = 600.0  # 10 minutos
+
 async def _get_gatekeeper_protocol() -> str:
-    """Helper para obtener el protocolo de la DB de manera segura."""
+    """Obtiene el protocolo del gatekeeper con cache TTL de 10 minutos."""
+    global _gatekeeper_protocol_cache, _gatekeeper_protocol_cached_at
+    now = time.monotonic()
+    if (_gatekeeper_protocol_cache is not None
+            and (now - _gatekeeper_protocol_cached_at) < _GATEKEEPER_PROTOCOL_TTL):
+        return _gatekeeper_protocol_cache
+
     client = SupabaseClient()
     try:
         protocol = await client.get_active_protocol("gatekeeper")
-        return protocol or "Evalúa la comprensión y frustración del alumno."
+        result = protocol or "Evalúa la comprensión y frustración del alumno."
+        _gatekeeper_protocol_cache = result
+        _gatekeeper_protocol_cached_at = now
+        logger.info("[gatekeeper] Protocolo cacheado (%s chars, TTL 10min).", len(result))
+        return result
     except Exception as e:
         logger.warning("[gatekeeper] Error obteniendo protocolo: %s", e)
+        if _gatekeeper_protocol_cache:
+            return _gatekeeper_protocol_cache
         return "Evalúa la comprensión y frustración del alumno."
     finally:
         await client.close()
