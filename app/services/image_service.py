@@ -33,7 +33,7 @@ async def generate_images(temas: list[dict]) -> list[str]:
     logger.info("[image_service] Llamando webhook con %s tema(s): %s", len(temas), [t.get("tema") for t in temas])
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(webhook_url, json=payload)
             resp.raise_for_status()
             data = resp.json()
