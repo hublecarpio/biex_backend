@@ -7,91 +7,71 @@ Diagrama de la lógica del agente y dónde se usa cada herramienta en el flujo d
 ## Diagrama (flujo completo)
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                         POST /api/v1/chat                                    │
-│  Body: mensaje, id_conversation, id_user, tipo_respuesta, stream              │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  HERRAMIENTA: Postgres (si DATABASE_URL)                                     │
-│  Checkpointer carga estado previo por thread_id = id_conversation             │
-│  → Mensajes anteriores de la conversación                                    │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  NODO: node_setup (entry)                                                    │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  HERRAMIENTA: Supabase                                                │   │
-│  │  • get_system_prompt()     → system_prompt (str)                      │   │
-│  │  • get_starter_profile(id_user) → perfil alumno (edad, intereses, etc.)│   │
-│  │  • query_knowledge(mensaje) → rag_context (búsqueda semántica)       │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│  State: starter_profile, system_prompt, rag_context                          │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                                      ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  GATEKEEPER: evaluate_gatekeeper                                            │
-│  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │  HERRAMIENTA: Gemini (LLM) + with_structured_output(GatekeeperEval)│   │
-│  │  Entrada: último mensaje del alumno                                  │   │
-│  │  Salida: comprension_score (0-100), frustracion_detectada (bool)    │   │
-│  └─────────────────────────────────────────────────────────────────────┘   │
-│  Reglas: score ≥ 85 → socrático | frustración → vicario | resto → generativo │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                      │
-                    ┌─────────────────┼─────────────────┐
-                    ▼                 ▼                 ▼
-        ┌───────────────┐ ┌───────────────┐ ┌───────────────┐
-        │ node_         │ │ node_         │ │ node_         │
-        │ generativo    │ │ vicario       │ │ socratico     │
-        ├───────────────┤ ├───────────────┤ ├───────────────┤
-        │ HERRAMIENTA:  │ │ HERRAMIENTA:  │ │ HERRAMIENTA:  │
-        │ Gemini +      │ │ Gemini +      │ │ Gemini +      │
-        │ system_prompt │ │ system_prompt │ │ system_prompt │
-        │ + perfil      │ │ + perfil      │ │ + perfil      │
-        │ + RAG context │ │ (sin RAG duro)│ │ (solo         │
-        │               │ │ Empatía /     │ │ preguntas     │
-        │ fase:         │ │ voz alta      │ │ críticas)     │
-        │ generativa    │ │ fase: vicaria │ │ fase:         │
-        │               │ │               │ │ socratica    │
-        └───────┬───────┘ └───────┬───────┘ └───────┬───────┘
-                │                 │                 │
-                └─────────────────┼─────────────────┘
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  HERRAMIENTA: Postgres (si DATABASE_URL)                                     │
-│  Checkpointer guarda nuevo estado (mensajes + fase) por thread_id            │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  Parser: parse_response_to_structured(texto_respuesta_AI)                    │
-│  • Extrae URLs Minio (images)                                                │
-│  • Limpia markdown, segmenta por \n\n → mensajes                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-                                  │
-                                  ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│  Respuesta API: { mensajes, images, images_count, current_phase }            │
-└─────────────────────────────────────────────────────────────────────────────┘
+POST /api/v1/chat
+    │  Body: mensaje, id_conversation, id_user, stream
+    ▼
+Cargar historial desde Supabase REST (últimos 14 mensajes + nuevo)
+    │
+    ▼
+node_setup (paralelo):
+  - system_prompt (cache TTL 5min)
+  - starter_profile (perfil del alumno con todos los campos del form)
+  - session_state (o crear defaults si es primera sesión)
+  - learner_insights (observaciones de sesiones anteriores)
+  - pedagogical_context (cache TTL 30min)
+  - RAG condicional: clasificador LLM decide si buscar contenido
+    │
+    ▼
+evaluate_gatekeeper (Gemini con protocolo de DB):
+  - Evalúa: comprensión, frustración, engagement, misconceptions
+  - Input: perfil + session_state + insights + últimos 5 mensajes
+  - Output: GatekeeperEval (comprension_score, frustracion_nivel,
+            engagement_score, misconceptions, recomendacion, justificacion)
+    │
+    ▼
+supervisor_decide (determinístico, SIN LLM):
+  - Lee session_state + gatekeeper_eval
+  - Decide fase según 6 reglas de transición
+  - Carga protocolo pedagógico de la DB para la fase decidida
+  - Si hay recalibración, carga protocolo "recalibracion"
+    │
+    ├── generativa    (Gemini + protocolo + RAG + imágenes en background)
+    ├── vicaria       (Gemini + protocolo, sin imágenes)
+    ├── socratica     (Gemini + protocolo, sin imágenes)
+    └── metacognicion (Gemini + protocolo + rúbrica)
+              │
+              ▼
+node_persist:
+  - Guarda session_state actualizado (upsert en Supabase)
+  - Registra gatekeeper_evaluation (tabla analítica)
+  - Actualiza conversations.current_phase
+    │
+    ▼
+Parser: parse_response_to_structured
+  - Extrae URLs Minio (images)
+  - Limpia markdown, segmenta por \n\n → mensajes
+    │
+    ▼
+Response: { mensajes, images, images_count, images_pending, images_job_id, current_phase }
 ```
 
 ---
 
 ## Resumen por herramienta
 
-| Herramienta | Dónde se usa | Qué hace en el flujo |
-|-------------|--------------|----------------------|
-| **Supabase** | `node_setup` | Prompt del sistema, perfil del alumno (`id_user`), contexto RAG del último `mensaje`. |
-| **Gemini (LLM)** | Gatekeeper | Evalúa comprensión y frustración → decide generativo / vicario / socrático. |
-| **Gemini (LLM)** | `node_generativo` | Respuesta educativa usando RAG + perfil. |
-| **Gemini (LLM)** | `node_vicario` | Respuesta empática / en voz alta con perfil (sin RAG rígido). |
-| **Gemini (LLM)** | `node_socratico` | Solo preguntas de pensamiento crítico. |
-| **Postgres** | Antes y después del grafo | Carga/guarda estado por `id_conversation` (memoria de conversación). |
-| **Parser** | Tras la respuesta AI | Convierte texto en `mensajes` + `images` + `images_count` para la API. |
+| Herramienta       | Dónde se usa              | Qué hace en el flujo                                                                                               |
+| ----------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Supabase REST** | `node_setup`              | system_prompt, starter_profile, session_state, learner_insights, pedagogical_docs, protocolos (tabla `protocols`). |
+| **Supabase REST** | `node_persist`            | Guarda session_state, registra gatekeeper_evaluation, actualiza conversations.current_phase.                       |
+| **Gemini (LLM)**  | `evaluate_gatekeeper`     | Evalúa comprensión, frustración, engagement y misconceptions con salida estructurada (`GatekeeperEval`).           |
+| **Gemini (LLM)**  | `should_query_rag`        | Clasificador con few-shot: decide si el mensaje requiere búsqueda RAG.                                             |
+| **Gemini (LLM)**  | `node_generativo`         | Respuesta educativa usando perfil + protocolo + RAG.                                                               |
+| **Gemini (LLM)**  | `node_vicario`            | Respuesta empática / pensamiento en voz alta.                                                                      |
+| **Gemini (LLM)**  | `node_socratico`          | Preguntas de pensamiento crítico.                                                                                  |
+| **Gemini (LLM)**  | `node_metacognicion`      | Cierre de sesión con reflexión metacognitiva y rúbrica.                                                            |
+| **Gemini (LLM)**  | `_extract_image_topics`   | Extrae temas visuales de la respuesta (solo en fase generativa).                                                   |
+| **Postgres**      | Antes y después del grafo | Carga/guarda historial de mensajes por `id_conversation` (checkpointer LangGraph).                                 |
+| **Parser**        | Tras la respuesta AI      | Convierte texto en `mensajes` + `images` + `images_count` + `images_pending` + `images_job_id`.                    |
 
 ---
 
@@ -100,44 +80,49 @@ Diagrama de la lógica del agente y dónde se usa cada herramienta en el flujo d
 ```mermaid
 flowchart TB
     subgraph entrada[" "]
-        A[POST /api/v1/chat]
+        A["POST /api/v1/chat"]
     end
-    subgraph memoria_carga["Memoria (Postgres)"]
-        B[Checkpointer carga estado por id_conversation]
+    subgraph historia["Historial (Supabase REST)"]
+        B["Cargar últimos 14 mensajes"]
     end
     subgraph setup["node_setup"]
-        C[Supabase: get_system_prompt]
-        D[Supabase: get_starter_profile]
-        E[Supabase: query_knowledge]
+        C["system_prompt (cache 5min)"]
+        D["starter_profile"]
+        E["session_state / defaults"]
+        F["learner_insights"]
+        G["pedagogical_context (cache 30min)"]
+        H["RAG condicional (clasificador LLM)"]
     end
-    subgraph gatekeeper["Gatekeeper"]
-        F[Gemini: GatekeeperEval]
-        G{score ≥ 85?}
-        H{frustración?}
+    subgraph gatekeeper["evaluate_gatekeeper"]
+        I["Gemini: GatekeeperEval\ncomprensión · frustración · engagement"]
+    end
+    subgraph supervisor["supervisor_decide (sin LLM)"]
+        J["6 reglas de transición\n+ carga protocolo de DB"]
     end
     subgraph nodos["Nodos de respuesta"]
-        I[node_generativo: Gemini + RAG]
-        J[node_vicario: Gemini + empatía]
-        K[node_socratico: Gemini + preguntas]
+        K["node_generativo\nGemini + RAG + imágenes bg"]
+        L["node_vicario\nGemini + protocolo"]
+        M["node_socratico\nGemini + protocolo"]
+        N["node_metacognicion\nGemini + rúbrica"]
     end
-    subgraph memoria_guardado["Memoria (Postgres)"]
-        L[Checkpointer guarda estado]
+    subgraph persist["node_persist"]
+        O["Guarda session_state\nRegistra gatekeeper eval\nActualiza current_phase"]
     end
     subgraph salida[" "]
-        M[Parser: mensajes, images, images_count]
-        N[Respuesta API]
+        P["Parser: mensajes, images, images_pending, images_job_id"]
+        Q["Respuesta API"]
     end
 
     A --> B --> C
-    C --> D --> E
-    E --> F
-    F --> G
-    G -->|Sí| K
-    G -->|No| H
-    H -->|Sí| J
-    H -->|No| I
-    I --> L
-    J --> L
-    K --> L
-    L --> M --> N
+    C --> D --> E --> F --> G --> H
+    H --> I --> J
+    J -->|generativa| K
+    J -->|vicaria| L
+    J -->|socratica| M
+    J -->|metacognicion| N
+    K --> O
+    L --> O
+    M --> O
+    N --> O
+    O --> P --> Q
 ```
