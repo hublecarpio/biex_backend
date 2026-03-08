@@ -167,8 +167,13 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
         f"- Historial Frustración (últimos 3): {frust_history}\n\n"
         "## Últimos 5 mensajes de la conversación\n"
         f"{historial_str}\n\n"
-        "Teniendo en cuenta todo este contexto, evalúa el último mensaje del alumno y "
-        "devuelve una evaluación estructurada estructurada en JSON usando el esquema solicitado."
+        "Evaluá el último mensaje del alumno considerando todo el contexto anterior.\n\n"
+        "Respondé ÚNICAMENTE con un JSON válido con esta estructura exacta:\n"
+        '{"comprension_score": <0-100>, "frustracion_detectada": <true|false>, '
+        '"frustracion_nivel": <0-10>, "engagement_score": <0-100>, '
+        '"misconceptions": ["<string>", ...], '
+        '"recomendacion": "<continuar|intensificar|simplificar|vicario|socratico|metacognicion>", '
+        '"justificacion": "<1 oración breve>"}'
     )
 
     llm = _get_llm()
