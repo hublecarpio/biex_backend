@@ -169,6 +169,7 @@ async def chat(http_request: Request, body: ChatRequest):
     initial_state: GraphState = {
         "messages": messages,
         "user_id": body.id_user,
+        "conversation_id": body.id_conversation,
     }
     
     # Thread_id local solo para memoria MemorySaver en runtime (opcional)

@@ -23,6 +23,7 @@ from app.graph.state import GraphState
 from app.models.schemas import ImageTopicList
 from app.services.image_jobs import complete_job, create_job, fail_job
 from app.services.supabase_api import SupabaseClient
+from app.utils.cache import get_pedagogical_context_cached
 
 logger = logging.getLogger(__name__)
 
@@ -201,21 +202,64 @@ async def _generate_images_background(job_id: str, topics: list[dict]) -> None:
 # Nodo principal: setup
 # ---------------------------------------------------------------------------
 
+async def should_query_rag(message: str, client: SupabaseClient) -> bool:
+    """Clasificador heurístico basado en LLM para decidir si hacer RAG."""
+    if not message.strip():
+        return False
+        
+    prompt = f"""Clasificá este mensaje de un alumno en una tutoría educativa.
+Respondé SOLO con un JSON: {{"needs_rag": true}} o {{"needs_rag": false}}
+Respondé true SOLO si el alumno está haciendo una pregunta sobre
+contenido educativo de una materia o necesita información factual.
+Respondé false si es: saludo, despedida, expresión emocional,
+respuesta corta (sí/no/ok), o meta-conversación.
+Mensaje: {message}"""
+
+    try:
+        settings = get_settings()
+        llm = ChatGoogleGenerativeAI(
+            model="gemini-2.5-flash",
+            google_api_key=settings.gemini_api_key,
+            temperature=0,
+        )
+        response = await llm.ainvoke(prompt)
+        content = _extract_text(response.content if hasattr(response, "content") else response)
+        
+        content = content.strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+        
+        parsed = json.loads(content)
+        return parsed.get("needs_rag", True)
+    except Exception as e:
+        logger.warning("[should_query_rag] Error en clasificador RAG: %s. Default fallback a True.", e)
+        return True
+
+
 async def node_setup(state: GraphState) -> dict:
-    """
-    Entry point: obtiene perfil, prompt maestro y contexto RAG.
-    Las 3 llamadas Supabase se ejecutan en PARALELO con asyncio.gather.
-    El system_prompt se lee desde cache TTL (5 min).
-    """
     t0 = time.perf_counter()
     messages: list = state.get("messages") or []
     user_id: str = state.get("user_id") or ""
+    conversation_id: str = state.get("conversation_id") or ""
 
-    logger.info("[node_setup] Iniciando para user_id=%s", user_id)
+    logger.info("[node_setup] Iniciando para user_id=%s, conversation_id=%s", user_id, conversation_id)
 
     if not messages:
         logger.warning("[node_setup] No hay mensajes en el estado, retornando vacío.")
-        return {"starter_profile": {}, "system_prompt": "", "rag_context": ""}
+        return {
+            "starter_profile": {}, 
+            "system_prompt": "", 
+            "rag_context": "",
+            "session_state": {},
+            "pedagogical_context": "",
+            "fase_actual": "generativa",
+            "learner_insights": []
+        }
 
     last_msg = messages[-1]
     if isinstance(last_msg, HumanMessage):
@@ -223,32 +267,75 @@ async def node_setup(state: GraphState) -> dict:
     else:
         user_text = ""
 
-    logger.info("[node_setup] Consultando Supabase en PARALELO (system_prompt, starter_profile, RAG)...")
+    logger.info("[node_setup] Consultando dependencias...")
     client = SupabaseClient()
     try:
-        # ✅ OPTIMIZACIÓN: las 3 llamadas HTTP corren en paralelo
-        system_prompt_raw, starter_profile_obj, rag_context = await asyncio.gather(
+        # c) Cargar pedagogical_context (con caché de memoria)
+        pedagogical_context = await get_pedagogical_context_cached(client)
+
+        # d) Obtener el resto en paralelo
+        system_prompt_raw, starter_profile_obj, session_state, learner_insights = await asyncio.gather(
             _get_system_prompt_cached(client),
             client.get_starter_profile(user_id),
-            client.query_knowledge(user_text),
+            client.get_session_state(conversation_id),
+            client.get_learner_insights(user_id),
         )
+
+        # e) Si session_state no existe, crear defaults
+        if not session_state:
+            session_state = {
+               "conversation_id": conversation_id, 
+               "user_id": user_id,
+               "session_phase": "generativa", 
+               "interaction_count": 0,
+               "comprehension_history": [], 
+               "frustration_history": [],
+               "engagement_history": [], 
+               "zdp_level": 50.0,
+               "cognitive_resilience": 50.0, 
+               "current_comprehension": 0.0,
+               "topics_covered": [], 
+               "misconceptions": [],
+               "socratic_questions_answered": 0, 
+               "socratic_correct_answers": 0,
+               "gatekeeper_override": False, 
+               "phase_transitions": [],
+               "vicario_triggers": 0
+            }
+
+        # f) Obtener current_phase (referencia inicial)
+        current_phase = session_state.get("session_phase", "generativa")
+
+        # g) RAG condicional
+        rag_context = ""
+        needs_rag = await should_query_rag(user_text, client)
+        if needs_rag:
+            logger.info("[node_setup] Clasificador decidió MANTENER RAG para: '%s...'", user_text[:30].replace('\n', ' '))
+            rag_context = await client.query_knowledge(user_text)
+        else:
+            logger.info("[node_setup] Clasificador decidió SALTAR RAG para: '%s...'", user_text[:30].replace('\n', ' '))
+
     finally:
         await client.close()
 
     starter_profile = starter_profile_obj.model_dump() if starter_profile_obj else {}
     elapsed = time.perf_counter() - t0
+    
     logger.info(
-        "[node_setup] Supabase OK en %.2fs — system_prompt=%s chars | profile=%s | rag=%s",
+        "[node_setup] Setup OK en %.2fs — RAG=%s",
         elapsed,
-        len(system_prompt_raw) if system_prompt_raw else 0,
-        "OK" if starter_profile else "vacío",
-        "OK" if rag_context else "vacío",
+        "Ejecutado" if needs_rag else "Saltado",
     )
 
+    # h) Retornar resultado
     return {
-        "starter_profile": starter_profile,
         "system_prompt": system_prompt_raw or "Eres un tutor educativo amable y claro.",
-        "rag_context": rag_context or "",
+        "starter_profile": starter_profile,
+        "session_state": session_state,
+        "pedagogical_context": pedagogical_context,
+        "rag_context": rag_context,
+        "fase_actual": current_phase,
+        "learner_insights": learner_insights or [],
     }
 
 
