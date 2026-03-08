@@ -540,25 +540,54 @@ async def node_metacognicion(state: GraphState) -> dict:
 # Nodo supervisor: routing determinístico + carga de protocolo
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Umbrales del supervisor pedagógico
+# Ajustar estos valores con datos reales de alumnos.
+# Cambiar un valor = 1 línea + deploy. Sin tablas, sin queries, sin LLM.
+# ---------------------------------------------------------------------------
+SUPERVISOR_THRESHOLDS = {
+    # Generativa → Socrático
+    "comprension_para_socratico": 70,       # Promedio mínimo de comprensión (0-100)
+    "mensajes_para_promediar": 3,           # Cuántos últimos scores promediar
+    "interacciones_minimas_generativa": 5,  # Mínimo de interacciones antes de poder pasar
+
+    # Trigger y salida de Vicario
+    "frustracion_trigger_vicario": 6,       # Nivel de frustración (0-10) para activar vicario
+    "frustracion_salida_vicario": 3,        # Nivel de frustración (0-10) para salir de vicario
+
+    # Socrático → Metacognición
+    "socratico_correctas_para_meta": 3,     # Respuestas correctas en socrático para avanzar
+
+    # Recalibración (vuelta a generativa)
+    "comprension_recalibracion": 40,        # Comprensión por debajo de esto → recalibrar
+    "frustracion_recalibracion": 7,         # Frustración por encima de esto → recalibrar
+
+    # Metacognición
+    "rubrica_minima_aprobacion": 50,        # Promedio de rúbrica por debajo → recalibrar
+}
+
+
 async def supervisor_decide(state: GraphState) -> dict:
     """Nodo determinístico que decide la siguiente fase pedagógica.
     También carga el protocolo correcto para la fase decidida.
 
-    No hace llamadas al LLM — toda la lógica es de negocio pura.
-    La carga del protocolo ocurre ACÁ (no en node_setup) porque
-    node_setup no sabe todavía qué fase va a elegir el supervisor.
+    Los umbrales viven en SUPERVISOR_THRESHOLDS (inicio del archivo).
     """
+    T = SUPERVISOR_THRESHOLDS  # alias corto para legibilidad
     session = dict(state.get("session_state") or {})
     gk = state.get("gatekeeper_eval") or {}
     current_phase = session.get("session_phase", "generativa")
     is_recalibration = False
 
+    frustracion = gk.get("frustracion_nivel", 0)
+    comprension = gk.get("comprension_score", 50)
+
     # Regla 1: Frustración alta → vicario (en cualquier fase)
-    if gk.get("frustracion_nivel", 0) >= 6:
+    if frustracion >= T["frustracion_trigger_vicario"]:
         next_phase = "vicario"
 
     # Regla 2: Vicario + frustración resuelta → volver a generativa
-    elif current_phase == "vicario" and gk.get("frustracion_nivel", 0) <= 3:
+    elif current_phase == "vicario" and frustracion <= T["frustracion_salida_vicario"]:
         next_phase = "generativa"
 
     # Regla 3: Override manual → socrático
@@ -568,18 +597,20 @@ async def supervisor_decide(state: GraphState) -> dict:
     # Regla 4: Generativa + comprensión alta + suficientes interacciones → socrático
     elif current_phase == "generativa":
         history = session.get("comprehension_history", [])
-        ultimos_3 = history[-3:] if history else []
-        promedio = sum(ultimos_3) / len(ultimos_3) if ultimos_3 else 0
-        if promedio >= 70 and session.get("interaction_count", 0) >= 5:
+        n = T["mensajes_para_promediar"]
+        ultimos = history[-n:] if history else []
+        promedio = sum(ultimos) / len(ultimos) if ultimos else 0
+        if (promedio >= T["comprension_para_socratico"]
+                and session.get("interaction_count", 0) >= T["interacciones_minimas_generativa"]):
             next_phase = "socratico"
         else:
             next_phase = "generativa"
 
     # Regla 5: Socrático → metacognición o recalibración
     elif current_phase == "socratico":
-        if session.get("socratic_correct_answers", 0) >= 3:
+        if session.get("socratic_correct_answers", 0) >= T["socratico_correctas_para_meta"]:
             next_phase = "metacognicion"
-        elif gk.get("comprension_score", 50) < 40 or gk.get("frustracion_nivel", 0) >= 7:
+        elif comprension < T["comprension_recalibracion"] or frustracion >= T["frustracion_recalibracion"]:
             next_phase = "generativa"
             is_recalibration = True
         else:
@@ -590,7 +621,7 @@ async def supervisor_decide(state: GraphState) -> dict:
         rubric = session.get("rubric_scores", {})
         if rubric:
             promedio_rubric = sum(rubric.values()) / len(rubric)
-            if promedio_rubric < 50:
+            if promedio_rubric < T["rubrica_minima_aprobacion"]:
                 next_phase = "generativa"
                 is_recalibration = True
             else:
