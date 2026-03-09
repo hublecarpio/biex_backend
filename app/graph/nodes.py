@@ -486,18 +486,18 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
     cuando estén listas (status == "done").
     """
     t0 = time.perf_counter()
-    # Explicit cache como fallback del implicit
+    # --- Caching: implicit es primario, explicit es fallback ---
+    # Implicit funciona automático (Google cachea el prefijo idéntico entre requests).
+    # Explicit cache garantiza descuento cuando implicit no matchea.
     cached_content_name = None
     if state and fase in ("generativa", "vicario", "socratico", "metacognicion"):
-        try:
-            from app.services.cache_manager import get_or_create_cache
-            # Extraer contenido estático del SystemMessage
-            system_msgs = [m for m in full_messages if isinstance(m, SystemMessage)]
-            if system_msgs:
-                static_content = system_msgs[0].content
-                cached_content_name = await get_or_create_cache(static_content, fase)
-        except Exception as e:
-            logger.debug("[cache] Explicit cache no disponible: %s", e)
+        static_for_cache = state.get("_static_for_cache", "")
+        if static_for_cache and len(static_for_cache) > 1024:
+            try:
+                from app.services.cache_manager import get_or_create_cache
+                cached_content_name = await get_or_create_cache(static_for_cache)
+            except Exception as e:
+                logger.debug("[cache] Explicit cache no disponible: %s", e)
 
     if cached_content_name:
         try:
@@ -510,8 +510,22 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
                 temperature=0.7,
                 cached_content=cached_content_name,
             )
-            history_only = [m for m in full_messages if not isinstance(m, SystemMessage)]
-            response = await cached_llm.ainvoke(history_only)
+            # Con explicit cache, el system_instruction ya está en el cache.
+            # Enviamos un SystemMessage SOLO con el bloque dinámico + historial.
+            system_msgs = [m for m in full_messages if isinstance(m, SystemMessage)]
+            non_system = [m for m in full_messages if not isinstance(m, SystemMessage)]
+            # Extraer solo la parte dinámica del system content
+            dynamic_marker = "===== CONTEXTO DE ESTA INTERACCIÓN ====="
+            if system_msgs:
+                full_sys = system_msgs[0].content
+                if dynamic_marker in full_sys:
+                    dynamic_part = full_sys.split(dynamic_marker, 1)[1]
+                    messages_for_cached = [SystemMessage(content=dynamic_part)] + non_system
+                else:
+                    messages_for_cached = non_system
+            else:
+                messages_for_cached = non_system
+            response = await cached_llm.ainvoke(messages_for_cached)
             logger.info("[%s] Respuesta con EXPLICIT CACHE", fase)
         except Exception as e:
             logger.warning("[%s] Explicit cache falló, fallback a implicit: %s", fase, e)
@@ -528,9 +542,8 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
     images_job_id: str | None = None
     images_pending: int = 0
 
-    # Solo extraer temas visuales en generativa
-    # En socrático y vicario no se generan imágenes (ahorro de tokens)
-    if fase == "generativa":
+    # Solo extraer temas visuales en generativa y vicario
+    if fase in ("generativa", "vicario"):
         # Guard: no extraer temas visuales en interacciones tempranas, comprensión baja,
         # o contenido corto (saludo, respuesta breve). Ahorra 1 llamada LLM por turno.
         session_check = state.get("session_state") or {} if state else {}
@@ -555,7 +568,7 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
             logger.info("[%s] Imágenes lanzadas en background — job_id=%s, pending=%s",
                         fase, job_id, images_pending)
     else:
-        logger.info("[%s] Extracción de temas visuales saltada (solo se ejecuta en generativa).", fase)
+        logger.info("[%s] Extracción de temas visuales saltada (fase no visual).", fase)
 
     # Detectar sugerencias de recursos multimedia
     suggested_resources = []
@@ -576,7 +589,7 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
 # Helper: construcción del prompt optimizado para Gemini Implicit Caching
 # ---------------------------------------------------------------------------
 
-def build_response_messages(state: GraphState) -> list[BaseMessage]:
+def build_response_messages(state: GraphState) -> tuple[list[BaseMessage], str]:
     """Construye la lista de mensajes para el LLM con orden óptimo para caching.
 
     Orden:
@@ -650,7 +663,9 @@ def build_response_messages(state: GraphState) -> list[BaseMessage]:
 
     # Historial limitado a los últimos 20 mensajes
     history = list(state.get("messages") or [])[-20:]
-    return [SystemMessage(content=system_content)] + history
+    # static_for_cache = solo la parte que NO cambia entre turnos
+    static_for_cache = static + "\n\n===== FIN DOCUMENTACIÓN PEDAGÓGICA =====\n\n" + semi_static
+    return [SystemMessage(content=system_content)] + history, static_for_cache
 
 
 # ---------------------------------------------------------------------------
@@ -660,28 +675,32 @@ def build_response_messages(state: GraphState) -> list[BaseMessage]:
 async def node_generativo(state: GraphState) -> dict:
     """Genera respuesta educativa. Fase: generativa."""
     logger.info("[node_generativo] Generando respuesta...")
-    full_messages = build_response_messages(state)
+    full_messages, static_for_cache = build_response_messages(state)
+    state["_static_for_cache"] = static_for_cache
     return await _invoke_with_images(_get_llm(), full_messages, "generativa", state)
 
 
 async def node_vicario(state: GraphState) -> dict:
     """Modo empatía / pensamiento en voz alta. Fase: vicario."""
     logger.info("[node_vicario] Generando respuesta vicario...")
-    full_messages = build_response_messages(state)
+    full_messages, static_for_cache = build_response_messages(state)
+    state["_static_for_cache"] = static_for_cache
     return await _invoke_with_images(_get_llm(), full_messages, "vicario", state)
 
 
 async def node_socratico(state: GraphState) -> dict:
     """Preguntas de pensamiento crítico. Fase: socratico."""
     logger.info("[node_socratico] Generando preguntas socráticas...")
-    full_messages = build_response_messages(state)
+    full_messages, static_for_cache = build_response_messages(state)
+    state["_static_for_cache"] = static_for_cache
     return await _invoke_with_images(_get_llm(), full_messages, "socratico", state)
 
 
 async def node_metacognicion(state: GraphState) -> dict:
     """Cierre de sesión con reflexión metacognitiva."""
     logger.info("[node_metacognicion] Ejecutando nodo de metacognición...")
-    full_messages = build_response_messages(state)
+    full_messages, static_for_cache = build_response_messages(state)
+    state["_static_for_cache"] = static_for_cache
     return await _invoke_with_images(_get_llm(), full_messages, "metacognicion", state)
 
 
@@ -703,6 +722,7 @@ SUPERVISOR_THRESHOLDS = {
     # Trigger y salida de Vicario
     "frustracion_trigger_vicario": 6,       # Nivel de frustración (0-10) para activar vicario
     "frustracion_salida_vicario": 3,        # Nivel de frustración (0-10) para salir de vicario
+    "vicario_max_triggers": 3,
 
     # Socrático → Metacognición
     "socratico_correctas_para_meta": 3,     # Respuestas correctas en socrático para avanzar
@@ -739,6 +759,12 @@ async def supervisor_decide(state: GraphState) -> dict:
     # Regla 2: Vicario + frustración resuelta → volver a generativa
     elif current_phase == "vicario" and frustracion <= T["frustracion_salida_vicario"]:
         next_phase = "generativa"
+
+    # Regla 2b: Vicario por demasiados turnos → forzar recalibración
+    elif current_phase == "vicario" and session.get("vicario_triggers", 0) >= T["vicario_max_triggers"]:
+        next_phase = "generativa"
+        is_recalibration = True
+        logger.info("[supervisor] Escape de vicario por exceso de turnos (vicario_triggers=%s).", session.get("vicario_triggers", 0))
 
     # Regla 3: Override manual → socrático
     elif session.get("gatekeeper_override", False):

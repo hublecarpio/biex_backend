@@ -1,11 +1,13 @@
 """
 Gestión de explicit cache de Gemini para contenido estático.
-Cachea system_prompt + pedagogical_context + protocolo de fase.
-Fallback garantizado del implicit caching.
+Cachea SOLO pedagogical_context + system_prompt (no cambian entre turnos).
+El explicit cache es fallback del implicit caching.
+Implicit funciona automático cuando el prefijo del prompt se repite.
 """
 import logging
 import time
 import os
+import hashlib
 
 from google import genai
 from google.genai import types
@@ -13,7 +15,7 @@ from google.genai import types
 logger = logging.getLogger(__name__)
 
 _genai_client = None
-_cache_registry: dict[str, dict] = {}
+_active_cache: dict | None = None
 _CACHE_TTL_SECONDS = "600s"
 
 
@@ -25,57 +27,64 @@ def _get_genai_client():
     return _genai_client
 
 
+def _hash_content(content: str) -> str:
+    return hashlib.md5(content.encode()).hexdigest()[:16]
+
+
 async def get_or_create_cache(
     static_content: str,
-    phase: str,
     model: str = "gemini-2.5-flash",
 ) -> str | None:
     """
     Crea o reutiliza un explicit cache para el contenido estático.
-    Retorna el cache name para cached_content, o None si falla.
+    Retorna el cache name o None si falla.
+    El cache se reutiliza si el contenido no cambió (mismo hash) y no expiró.
     """
+    global _active_cache
+
     if not static_content or len(static_content) < 500:
         return None
 
-    content_hash = str(hash(static_content))[:12]
-    cache_key = f"biex_{phase}_{content_hash}"
+    content_hash = _hash_content(static_content)
 
-    existing = _cache_registry.get(cache_key)
-    if existing and (time.monotonic() - existing["created_at"]) < 540:
-        logger.debug("[cache_manager] Cache hit para fase=%s", phase)
-        return existing["cache_name"]
+    # Reutilizar cache existente si mismo hash y no expirado (margen 60s antes de TTL)
+    if (_active_cache
+            and _active_cache["hash"] == content_hash
+            and (time.monotonic() - _active_cache["created_at"]) < 540):
+        return _active_cache["cache_name"]
 
+    # Crear nuevo cache
     try:
         client = _get_genai_client()
+
+        # Eliminar cache viejo si existe
+        if _active_cache:
+            try:
+                client.caches.delete(name=_active_cache["cache_name"])
+            except Exception:
+                pass
+
         cache = client.caches.create(
             model=model,
             config=types.CreateCachedContentConfig(
-                display_name=f"biex-{phase}",
+                display_name="biex-static",
                 system_instruction=static_content,
                 ttl=_CACHE_TTL_SECONDS,
             ),
         )
-        cache_name = cache.name
-        _cache_registry[cache_key] = {
-            "cache_name": cache_name,
+
+        _active_cache = {
+            "cache_name": cache.name,
+            "hash": content_hash,
             "created_at": time.monotonic(),
         }
 
-        keys_to_remove = [
-            k for k in _cache_registry
-            if k.startswith(f"biex_{phase}_") and k != cache_key
-        ]
-        for k in keys_to_remove:
-            old = _cache_registry.pop(k, None)
-            if old:
-                try:
-                    client.caches.delete(name=old["cache_name"])
-                except Exception:
-                    pass
-
-        logger.info("[cache_manager] Explicit cache creado fase=%s name=%s", phase, cache_name)
-        return cache_name
+        logger.info(
+            "[cache_manager] Explicit cache creado — name=%s hash=%s",
+            cache.name, content_hash,
+        )
+        return cache.name
 
     except Exception as e:
-        logger.warning("[cache_manager] Explicit cache falló fase=%s: %s", phase, e)
+        logger.warning("[cache_manager] Explicit cache falló: %s", e)
         return None
