@@ -363,6 +363,11 @@ class SupabaseClient:
 
             # Construir mensaje actualizado con tag de imágenes
             current_msg = target.get("message", "")
+
+            if not urls:
+                logger.info("[supabase] No hay URLs para actualizar — saltando update de mensaje %s.", target["id"])
+                return True
+
             images_tag = f" [IMAGES]{'|'.join(urls)}[/IMAGES]"
 
             meta = target.get("metadata") or {}
