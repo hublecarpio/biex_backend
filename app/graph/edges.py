@@ -152,10 +152,10 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
     zdp = session_state.get("zdp_level", 50.0)
     frust_history = session_state.get("frustration_history", [])[-3:]
 
-    # 5. Últimos 5 mensajes
-    last_5_msgs = messages[-5:]
+    # 5. Últimos 15 mensajes (alineado con build_response_messages)
+    last_msgs = messages[-15:]
     historial_str = ""
-    for m in last_5_msgs:
+    for m in last_msgs:
         if isinstance(m, HumanMessage):
             rol = "ALUMNO"
         elif isinstance(m, AIMessage):
@@ -180,7 +180,7 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
         f"- Historial Comprensión (últimos 5): {comp_history}\n"
         f"- ZDP Nivel: {zdp}\n"
         f"- Historial Frustración (últimos 3): {frust_history}\n\n"
-        "## Últimos 5 mensajes de la conversación\n"
+        "## Últimos mensajes de la conversación\n"
         f"{historial_str}\n\n"
         "Evaluá el último mensaje del alumno considerando todo el contexto anterior.\n\n"
         "Respondé ÚNICAMENTE con un JSON válido con esta estructura exacta:\n"
