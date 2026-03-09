@@ -137,7 +137,7 @@ class SupabaseClient:
         Retorna el historial de la conversación ordenado cronológicamente.
         """
         logger.info("[supabase] GET messages para conversation_id=%s...", conversation_id)
-        client = await self._get_client()
+        client = await self._get_service_client()
         try:
             resp = await client.get(
                 "/rest/v1/messages",

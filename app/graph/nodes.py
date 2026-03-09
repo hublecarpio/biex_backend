@@ -36,15 +36,28 @@ def _log_cache_stats(response, context: str) -> None:
         metadata = getattr(response, "usage_metadata", None)
         if metadata is None:
             return
-        cached = getattr(metadata, "cached_content_token_count", 0) or 0
-        total = getattr(metadata, "prompt_token_count", 0) or 0
+
+        if isinstance(metadata, dict):
+            total = metadata.get("input_tokens", 0) or 0
+            output = metadata.get("output_tokens", 0) or 0
+            details = metadata.get("input_token_details") or {}
+            cached = details.get("cache_read", 0) or 0 if isinstance(details, dict) else 0
+        else:
+            total = getattr(metadata, "input_tokens", 0) or getattr(metadata, "prompt_token_count", 0) or 0
+            output = getattr(metadata, "output_tokens", 0) or getattr(metadata, "candidates_token_count", 0) or 0
+            details = getattr(metadata, "input_token_details", None)
+            if isinstance(details, dict):
+                cached = details.get("cache_read", 0) or 0
+            else:
+                cached = getattr(metadata, "cached_content_token_count", 0) or 0
+
         ratio = cached / total if total else 0
         cache_logger.info(
-            "CACHE_STATS | context=%s | cached=%s | total_input=%s | ratio=%.2f%%",
-            context, cached, total, ratio * 100,
+            "CACHE_STATS | context=%s | cached=%s | total_input=%s | output=%s | ratio=%.2f%%",
+            context, cached, total, output, ratio * 100,
         )
     except Exception:
-        pass  # No romper el flujo por un error de logging
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +486,38 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
     cuando estén listas (status == "done").
     """
     t0 = time.perf_counter()
-    response = await llm.ainvoke(full_messages)
+    # Explicit cache como fallback del implicit
+    cached_content_name = None
+    if state and fase in ("generativa", "vicario", "socratico", "metacognicion"):
+        try:
+            from app.services.cache_manager import get_or_create_cache
+            # Extraer contenido estático del SystemMessage
+            system_msgs = [m for m in full_messages if isinstance(m, SystemMessage)]
+            if system_msgs:
+                static_content = system_msgs[0].content
+                cached_content_name = await get_or_create_cache(static_content, fase)
+        except Exception as e:
+            logger.debug("[cache] Explicit cache no disponible: %s", e)
+
+    if cached_content_name:
+        try:
+            from app.core.config import get_settings
+            from langchain_google_genai import ChatGoogleGenerativeAI as _CachedLLM
+            settings = get_settings()
+            cached_llm = _CachedLLM(
+                model="gemini-2.5-flash",
+                google_api_key=settings.gemini_api_key,
+                temperature=0.7,
+                cached_content=cached_content_name,
+            )
+            history_only = [m for m in full_messages if not isinstance(m, SystemMessage)]
+            response = await cached_llm.ainvoke(history_only)
+            logger.info("[%s] Respuesta con EXPLICIT CACHE", fase)
+        except Exception as e:
+            logger.warning("[%s] Explicit cache falló, fallback a implicit: %s", fase, e)
+            response = await llm.ainvoke(full_messages)
+    else:
+        response = await llm.ainvoke(full_messages)
     content = _extract_text(response.content if hasattr(response, "content") else response)
     llm_elapsed = time.perf_counter() - t0
     logger.info("[%s] LLM respondió en %.2fs — %s chars.", fase, llm_elapsed, len(content))

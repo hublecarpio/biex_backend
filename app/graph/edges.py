@@ -22,15 +22,28 @@ def _log_cache_stats(response, context: str) -> None:
         metadata = getattr(response, "usage_metadata", None)
         if metadata is None:
             return
-        cached = getattr(metadata, "cached_content_token_count", 0) or 0
-        total = getattr(metadata, "prompt_token_count", 0) or 0
+
+        if isinstance(metadata, dict):
+            total = metadata.get("input_tokens", 0) or 0
+            output = metadata.get("output_tokens", 0) or 0
+            details = metadata.get("input_token_details") or {}
+            cached = details.get("cache_read", 0) or 0 if isinstance(details, dict) else 0
+        else:
+            total = getattr(metadata, "input_tokens", 0) or getattr(metadata, "prompt_token_count", 0) or 0
+            output = getattr(metadata, "output_tokens", 0) or getattr(metadata, "candidates_token_count", 0) or 0
+            details = getattr(metadata, "input_token_details", None)
+            if isinstance(details, dict):
+                cached = details.get("cache_read", 0) or 0
+            else:
+                cached = getattr(metadata, "cached_content_token_count", 0) or 0
+
         ratio = cached / total if total else 0
         cache_logger.info(
-            "CACHE_STATS | context=%s | cached=%s | total_input=%s | ratio=%.2f%%",
-            context, cached, total, ratio * 100,
+            "CACHE_STATS | context=%s | cached=%s | total_input=%s | output=%s | ratio=%.2f%%",
+            context, cached, total, output, ratio * 100,
         )
     except Exception:
-        pass  # No romper el flujo por un error de logging
+        pass
 
 # ---------------------------------------------------------------------------
 # Singleton LLM para el Gatekeeper — misma estrategia que nodes.py
