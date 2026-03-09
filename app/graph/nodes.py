@@ -517,17 +517,17 @@ async def node_generativo(state: GraphState) -> dict:
 
 
 async def node_vicario(state: GraphState) -> dict:
-    """Modo empatía / pensamiento en voz alta. Fase: vicaria."""
-    logger.info("[node_vicario] Generando respuesta vicaria...")
+    """Modo empatía / pensamiento en voz alta. Fase: vicario."""
+    logger.info("[node_vicario] Generando respuesta vicario...")
     full_messages = build_response_messages(state)
-    return await _invoke_with_images(_get_llm(), full_messages, "vicaria")
+    return await _invoke_with_images(_get_llm(), full_messages, "vicario")
 
 
 async def node_socratico(state: GraphState) -> dict:
-    """Preguntas de pensamiento crítico. Fase: socratica."""
+    """Preguntas de pensamiento crítico. Fase: socratico."""
     logger.info("[node_socratico] Generando preguntas socráticas...")
     full_messages = build_response_messages(state)
-    return await _invoke_with_images(_get_llm(), full_messages, "socratica")
+    return await _invoke_with_images(_get_llm(), full_messages, "socratico")
 
 
 async def node_metacognicion(state: GraphState) -> dict:
@@ -663,6 +663,12 @@ async def supervisor_decide(state: GraphState) -> dict:
             "is_recalibration": is_recalibration,
         })
         session["phase_transitions"] = transitions
+
+        # Reset contadores socrático al SALIR de socrático
+        if current_phase == "socratico" and next_phase != "socratico":
+            session["socratic_questions_answered"] = 0
+            session["socratic_correct_answers"] = 0
+            logger.info("[supervisor] Reset contadores socrático (salió de fase socrática).")
 
     session["session_phase"] = next_phase
 
