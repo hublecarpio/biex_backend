@@ -182,13 +182,20 @@ async def _extract_image_topics(response_text: str) -> list[dict]:
     structured_llm = _get_llm_image_topic().with_structured_output(ImageTopicList)
 
     prompt = (
-        "Analiza la siguiente respuesta de un tutor educativo. "
-        "Identifica los conceptos o elementos visuales concretos que se beneficiarían de una imagen ilustrativa "
-        "(diagramas, partes de objetos, procesos, estructuras, etc.). "
-        "Para cada tema visual, provee un nombre corto y una descripción detallada de 2-3 oraciones "
-        "que ayude al generador de imágenes a crear algo preciso y educativo. "
-        "Si la respuesta es puramente conversacional o no requiere imágenes, devuelve una lista vacía.\n\n"
-        f"Respuesta del tutor:\n{response_text}"
+        "Eres un curador de contenido visual educativo. Analiza esta respuesta de un tutor "
+        "y extrae SOLO conceptos que REQUIERAN una imagen para ser comprendidos correctamente.\n\n"
+        "REGLAS ESTRICTAS:\n"
+        "- Máximo 2 temas visuales por respuesta.\n"
+        "- Solo elementos que un estudiante NO puede imaginar fácilmente por sí mismo.\n"
+        "- Priorizar: diagramas de procesos, estructuras anatómicas/científicas, relaciones causa-efecto, "
+        "comparaciones visuales, ciclos, mapas conceptuales.\n"
+        "- NO generar imágenes para: definiciones simples, conceptos abstractos sin forma visual, "
+        "listas, fechas, datos numéricos, emociones, motivación.\n"
+        "- Cada descripción debe ser PRECISA y DETALLADA (2-3 oraciones) indicando: qué mostrar, "
+        "qué etiquetas incluir, qué estilo visual usar (diagrama, ilustración, esquema, corte transversal, etc.).\n"
+        "- Si la respuesta es conversacional, de acompañamiento emocional, o no tiene contenido visual "
+        "que realmente necesite ilustración, devuelve una lista VACÍA.\n\n"
+        f"Respuesta del tutor:\n{response_text[:1500]}"
     )
 
     try:
@@ -209,8 +216,12 @@ async def _extract_image_topics(response_text: str) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _detect_resource_suggestions(state: GraphState, fase: str) -> list[str]:
-    """Detecta qué recursos multimedia serían útiles en este punto de la sesión.
-    Retorna lista de strings: 'mind_map', 'fichas', 'video', 'podcast', 'informe'."""
+    """Detecta qué recursos multimedia serían útiles. MUY conservador para economizar costos.
+    Solo sugiere cuando hay evidencia fuerte de que el recurso será valioso."""
+    # NUNCA sugerir en fases emocionales o de evaluación
+    if fase in ("vicario", "socratico"):
+        return []
+
     session = state.get("session_state") or {}
     gk = state.get("gatekeeper_eval") or {}
     suggestions = []
@@ -219,25 +230,26 @@ def _detect_resource_suggestions(state: GraphState, fase: str) -> list[str]:
     topics_covered = session.get("topics_covered", [])
     comprension = gk.get("comprension_score", 50)
 
-    # Mapa mental: cuando se cubrieron 3+ temas y comprensión es alta
-    if len(topics_covered) >= 3 and comprension >= 65:
+    # Mapa mental: solo cuando hay suficiente material consolidado
+    if len(topics_covered) >= 5 and comprension >= 75 and interaction_count >= 10:
         suggestions.append("mind_map")
 
-    # Fichas: después de 8+ interacciones con comprensión moderada-alta
-    if interaction_count >= 8 and comprension >= 55:
+    # Fichas: después de una sesión sustancial con buena comprensión
+    if interaction_count >= 14 and comprension >= 65 and len(topics_covered) >= 3:
         suggestions.append("fichas")
 
-    # Video y Podcast: en fase de metacognición (cierre de sesión)
+    # Video, Podcast e Informe: EXCLUSIVAMENTE en metacognición (cierre)
     if fase == "metacognicion":
         suggestions.append("video")
         suggestions.append("podcast")
-
-    # Informe: en metacognición o después de muchas interacciones
-    if fase == "metacognicion" or interaction_count >= 15:
         suggestions.append("informe")
 
+    # Máximo 3 sugerencias para no saturar la UI
+    suggestions = suggestions[:3]
+
     if suggestions:
-        logger.info("[resource_suggestions] Sugerencias detectadas: %s", suggestions)
+        logger.info("[resource_suggestions] Sugerencias: %s (interacciones=%s, topics=%s, comp=%.0f)",
+                    suggestions, interaction_count, len(topics_covered), comprension)
 
     return suggestions
 
@@ -286,6 +298,18 @@ async def should_query_rag(message: str, client: SupabaseClient) -> bool:
     if not message.strip():
         return False
         
+    # Pre-filtro heurístico: mensajes cortos y comunes que nunca necesitan RAG
+    lower = message.lower().strip()
+    NO_RAG_PATTERNS = [
+        "hola", "chau", "gracias", "dale", "ok", "si", "no", "sí",
+        "bueno", "bien", "genial", "perfecto", "listo", "ya",
+        "no sé", "no se", "no entiendo", "me aburro", "me cuesta",
+        "jaja", "xd", "jeje",
+    ]
+    if len(lower) < 25 and any(lower.startswith(p) or lower == p for p in NO_RAG_PATTERNS):
+        logger.info("[should_query_rag] Pre-filtro heurístico: NO RAG para '%s'", lower[:30])
+        return False
+
     prompt = f'''Clasificá este mensaje de un alumno en una tutoría educativa.
 Respondé SOLO con JSON: {{"needs_rag": true}} o {{"needs_rag": false}}
 
@@ -463,7 +487,22 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
     # Solo extraer temas visuales en generativa
     # En socrático y vicario no se generan imágenes (ahorro de tokens)
     if fase == "generativa":
-        topics = await _extract_image_topics(content)
+        # Guard: no extraer temas visuales en interacciones tempranas, comprensión baja,
+        # o contenido corto (saludo, respuesta breve). Ahorra 1 llamada LLM por turno.
+        session_check = state.get("session_state") or {} if state else {}
+        gk_check = state.get("gatekeeper_eval") or {} if state else {}
+        skip_images = (
+            session_check.get("interaction_count", 0) < 2
+            or gk_check.get("comprension_score", 50) < 35
+            or len(content) < 150
+        )
+
+        if skip_images:
+            logger.info("[%s] Extracción de temas visuales saltada (guard: interacción temprana, baja comprensión, o respuesta corta).", fase)
+            topics = []
+        else:
+            topics = await _extract_image_topics(content)
+
         if topics:
             # ✅ OPTIMIZACIÓN: las imágenes se generan en background, no bloqueamos la respuesta
             job_id = await create_job(images_pending=len(topics))
