@@ -700,7 +700,9 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
                 full_sys = system_msgs[0].content
                 if dynamic_marker in full_sys:
                     dynamic_part = full_sys.split(dynamic_marker, 1)[1]
-                    messages_for_cached = [SystemMessage(content=dynamic_part)] + non_system
+                    # Usar HumanMessage en vez de SystemMessage para evitar que
+                    # langchain lo convierta a system_instruction (que conflictúa con cached_content)
+                    messages_for_cached = [HumanMessage(content=f"[CONTEXTO ACTUAL]\n{dynamic_part}")] + non_system
                 else:
                     messages_for_cached = non_system
             else:
@@ -1286,6 +1288,8 @@ async def node_persist(state: GraphState) -> dict:
             gk_eval_payload["care_score"], gk_eval_payload["know_score"], 
             gk_eval_payload["construct_score"], gk_eval_payload["do_score"]
         )
+
+        session.pop("_previous_topic", None)
 
         await asyncio.gather(
             client.save_session_state(session),
