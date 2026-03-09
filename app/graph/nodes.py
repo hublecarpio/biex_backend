@@ -355,10 +355,15 @@ async def node_setup(state: GraphState) -> dict:
     starter_profile = starter_profile_obj.model_dump(by_alias=True) if starter_profile_obj else {}
     elapsed = time.perf_counter() - t0
     
+    is_new_session = not bool(session_state.get("interaction_count"))
     logger.info(
-        "[node_setup] Setup OK en %.2fs — RAG=%s",
+        "[node_setup] Setup OK en %.2fs — fase=%s | interacción=#%s | insights=%s | RAG=%s | sesión=%s",
         elapsed,
+        current_phase,
+        session_state.get("interaction_count", 0),
+        len(learner_insights or []),
         "Ejecutado" if needs_rag else "Saltado",
+        "NUEVA" if is_new_session else "existente",
     )
 
     # h) Retornar resultado
@@ -738,6 +743,10 @@ async def node_persist(state: GraphState) -> dict:
     # Contador de triggers vicario
     if state.get("fase_actual") == "vicario":
         session["vicario_triggers"] = session.get("vicario_triggers", 0) + 1
+        logger.info(
+            "[node_persist] Vicario trigger #%s acumulado.",
+            session["vicario_triggers"],
+        )
 
     # Contadores socrático: preguntas respondidas y respuestas correctas
     if state.get("fase_actual") == "socratico":
@@ -747,9 +756,18 @@ async def node_persist(state: GraphState) -> dict:
         if gk.get("comprension_score", 0) >= SUPERVISOR_THRESHOLDS.get("socratico_comprension_correcta", 60):
             session["socratic_correct_answers"] = session.get("socratic_correct_answers", 0) + 1
             logger.info(
-                "[node_persist] Socrático: respuesta correcta #%s (comprensión=%.1f)",
+                "[node_persist] Socrático: respuesta correcta #%s (comprensión=%.1f) | respondidas=%s",
                 session["socratic_correct_answers"],
                 gk.get("comprension_score", 0),
+                session["socratic_questions_answered"],
+            )
+        else:
+            logger.info(
+                "[node_persist] Socrático: respuesta NO correcta (comprensión=%.1f < %.0f) | respondidas=%s | correctas=%s",
+                gk.get("comprension_score", 0),
+                SUPERVISOR_THRESHOLDS.get("socratico_comprension_correcta", 60),
+                session["socratic_questions_answered"],
+                session.get("socratic_correct_answers", 0),
             )
 
     # Rúbrica de metacognición: usar comprensión y engagement como proxy
@@ -769,6 +787,15 @@ async def node_persist(state: GraphState) -> dict:
         logger.info(
             "[node_persist] Metacognición: rubric_scores generadas (proxy) — factual=%.0f, aplicacion=%.0f, analisis=%.0f, sintesis=%.0f",
             comp, comp, promedio, promedio,
+        )
+
+    # Log de topics detectados
+    detected_topic = gk.get("topic", "")
+    if detected_topic:
+        logger.info(
+            "[node_persist] Topic detectado: '%s' | topics_covered=%s",
+            detected_topic,
+            session.get("topics_covered", []),
         )
 
     client = SupabaseClient()

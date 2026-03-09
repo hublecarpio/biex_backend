@@ -206,12 +206,18 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
 
 
     logger.info(
-        "[gatekeeper] Evaluación exitosa: comprensión=%.1f | frustración=%s | engagement=%.1f | rec=%s",
+        "[gatekeeper] Evaluación OK — comprensión=%.1f | frustración=%s (nivel=%s) | engagement=%.1f | rec=%s | topic='%s' | misconceptions=%s",
         eval_result.comprension_score,
         eval_result.frustracion_detectada,
+        eval_result.frustracion_nivel,
         eval_result.engagement_score,
         eval_result.recomendacion,
+        eval_result.topic or "(sin tema)",
+        len(eval_result.misconceptions),
     )
+    if eval_result.misconceptions:
+        logger.info("[gatekeeper] Misconceptions detectados: %s", eval_result.misconceptions)
+    logger.info("[gatekeeper] Justificación: %s", eval_result.justificacion)
 
     try:
         resultado = eval_result.model_dump()

@@ -140,6 +140,9 @@ async def get_image_job(job_id: str):
 async def chat(http_request: Request, body: ChatRequest):
     t_start = time.perf_counter()
     logger.info(
+        "[chat] ═══ NUEVO TURNO ══════════════════════════════════════════"
+    )
+    logger.info(
         "[chat] Request recibido — user_id=%s | conversation_id=%s | stream=%s | mensaje=%s chars",
         body.id_user,
         body.id_conversation,
@@ -164,9 +167,14 @@ async def chat(http_request: Request, body: ChatRequest):
         elif role == "assistant":
             messages.append(AIMessage(content=content))
 
-    # Limitar historial a los últimos 14 mensajes + el mensaje nuevo = 15 total
-    messages = messages[-14:]
+    # Limitar historial a los últimos 19 mensajes + el mensaje nuevo = 20 total
+    messages = messages[-19:]
     messages.append(HumanMessage(content=body.mensaje))
+    logger.info(
+        "[chat] Historial cargado — %s msgs de DB, total con nuevo: %s",
+        len(raw_history),
+        len(messages),
+    )
 
     initial_state: GraphState = {
         "messages": messages,
