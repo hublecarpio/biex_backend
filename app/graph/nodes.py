@@ -724,6 +724,16 @@ async def node_persist(state: GraphState) -> dict:
                 existing.append(m)
         session["misconceptions"] = existing[-10:]
 
+    # Actualizar tema actual si el gatekeeper detectó uno
+    detected_topic = gk.get("topic", "")
+    if detected_topic:
+        session["current_topic"] = detected_topic
+        # Agregar a topics_covered si es nuevo
+        covered = list(session.get("topics_covered", []))
+        if detected_topic not in covered:
+            covered.append(detected_topic)
+            session["topics_covered"] = covered[-20:]  # últimos 20 temas
+
     # Contador de triggers vicario
     if state.get("fase_actual") == "vicario":
         session["vicario_triggers"] = session.get("vicario_triggers", 0) + 1

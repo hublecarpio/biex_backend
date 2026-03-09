@@ -188,7 +188,8 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
         '"frustracion_nivel": <0-10>, "engagement_score": <0-100>, '
         '"misconceptions": ["<string>", ...], '
         '"recomendacion": "<continuar|intensificar|simplificar|vicario|socratico|metacognicion>", '
-        '"justificacion": "<1 oración breve>"}'
+        '"justificacion": "<1 oración breve>", '
+        '"topic": "<tema educativo principal o vacío si no hay>"}'
     )
 
     llm = _get_llm()

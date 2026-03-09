@@ -83,6 +83,11 @@ class GatekeeperEval(BaseModel):
     misconceptions: list[str] = Field(default_factory=list, description="Lista de malentendidos detectados")
     recomendacion: Literal['continuar', 'intensificar', 'simplificar', 'vicario', 'socratico', 'metacognicion'] = Field(description="Recomendación pedagógica o táctica a seguir")
     justificacion: str = Field(description="Breve justificación de los scores y la recomendación")
+    topic: str = Field(
+        default="",
+        description="Tema educativo principal del mensaje. "
+        "Vacío si es saludo o mensaje sin tema educativo."
+    )
 
 
 # --- Supabase: Starter Profile ---
