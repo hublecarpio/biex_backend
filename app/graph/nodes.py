@@ -789,15 +789,6 @@ async def node_persist(state: GraphState) -> dict:
             comp, comp, promedio, promedio,
         )
 
-    # Log de topics detectados
-    detected_topic = gk.get("topic", "")
-    if detected_topic:
-        logger.info(
-            "[node_persist] Topic detectado: '%s' | topics_covered=%s",
-            detected_topic,
-            session.get("topics_covered", []),
-        )
-
     client = SupabaseClient()
     try:
         await asyncio.gather(
