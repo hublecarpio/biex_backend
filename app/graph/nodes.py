@@ -566,6 +566,12 @@ async def node_setup(state: GraphState) -> dict:
     
     session_state["user_profile_type"] = user_profile_type
     session_state["input_preference"] = input_preference
+    
+    logger.info(
+        "[node_setup] Perfil SOFFIA: %s | Input Pref: %s | CLI_b: %.3f",
+        user_profile_type, input_preference, session_state.get("cli_b", 0.5)
+    )
+    
     elapsed = time.perf_counter() - t0
     
     is_new_session = not bool(session_state.get("interaction_count"))
@@ -1082,8 +1088,8 @@ async def node_persist(state: GraphState) -> dict:
     )
     
     logger.info(
-        "[node_persist] CLI_op=%.3f | V_error=%s | ZPD_State=%s",
-        session["cli_op"], v_error, session["zpd_state"],
+        "[node_persist] CLI_op=%.3f | V_error=%s | ZPD_State=%s | Comp=%.1f | Frust=%.1f",
+        session["cli_op"], v_error, session["zpd_state"], gk.get("comprension_score", 50), gk.get("frustracion_nivel", 0)
     )
 
     # Mastery: actualizar para el topic actual (simplificado)
@@ -1144,27 +1150,35 @@ async def node_persist(state: GraphState) -> dict:
 
     client = SupabaseClient()
     try:
+        gk_eval_payload = {
+            "conversation_id": state.get("conversation_id"),
+            "user_id": state.get("user_id"),
+            "topic": gk.get("topic", ""),
+            "care_score": min(100, int(gk.get("engagement_score", 50) * 0.7 + gk.get("comprension_score", 50) * 0.3)),
+            "know_score": int(gk.get("comprension_score", 50)),
+            "construct_score": int(gk.get("comprension_score", 50) * 0.6 + gk.get("engagement_score", 50) * 0.4),
+            "do_score": int(gk.get("comprension_score", 50) * 0.5 + gk.get("engagement_score", 50) * 0.5),
+            "comprehension_score": int(round(gk.get("comprension_score", 0))),
+            "frustration_detected": gk.get("frustracion_detectada", False),
+            "frustration_level": gk.get("frustracion_nivel", 0),
+            "engagement_score": int(round(gk.get("engagement_score", 0))),
+            "misconceptions": gk.get("misconceptions", []),
+            "recommendation": gk.get("recomendacion", "continuar"),
+            "justification": gk.get("justificacion", ""),
+            "current_phase": state.get("fase_actual", "generativa"),
+            "interaction_number": session["interaction_count"],
+            "raw_response": gk,
+        }
+        
+        logger.info(
+            "[node_persist] 4D Gatekeeper Eval -> CARE:%s KNOW:%s CONSTRUCT:%s DO:%s",
+            gk_eval_payload["care_score"], gk_eval_payload["know_score"], 
+            gk_eval_payload["construct_score"], gk_eval_payload["do_score"]
+        )
+
         await asyncio.gather(
             client.save_session_state(session),
-            client.save_gatekeeper_evaluation({
-                "conversation_id": state.get("conversation_id"),
-                "user_id": state.get("user_id"),
-                "topic": gk.get("topic", ""),
-                "care_score": min(100, int(gk.get("engagement_score", 50) * 0.7 + gk.get("comprension_score", 50) * 0.3)),
-                "know_score": int(gk.get("comprension_score", 50)),
-                "construct_score": int(gk.get("comprension_score", 50) * 0.6 + gk.get("engagement_score", 50) * 0.4),
-                "do_score": int(gk.get("comprension_score", 50) * 0.5 + gk.get("engagement_score", 50) * 0.5),
-                "comprehension_score": int(round(gk.get("comprension_score", 0))),
-                "frustration_detected": gk.get("frustracion_detectada", False),
-                "frustration_level": gk.get("frustracion_nivel", 0),
-                "engagement_score": int(round(gk.get("engagement_score", 0))),
-                "misconceptions": gk.get("misconceptions", []),
-                "recommendation": gk.get("recomendacion", "continuar"),
-                "justification": gk.get("justificacion", ""),
-                "current_phase": state.get("fase_actual", "generativa"),
-                "interaction_number": session["interaction_count"],
-                "raw_response": gk,
-            }),
+            client.save_gatekeeper_evaluation(gk_eval_payload),
             client.update_conversation_phase(
                 state.get("conversation_id"),
                 state.get("fase_actual", "generativa"),

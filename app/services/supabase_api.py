@@ -410,7 +410,7 @@ class SupabaseClient:
 
     async def save_tutor_report(self, report: dict) -> None:
         """POST /rest/v1/tutor_reports"""
-        logger.info("[supabase] POST tutor_reports...")
+        logger.info("[supabase] POST tutor_reports para conversation_id=%s...", report.get("conversation_id"))
         client = await self._get_service_client()
         try:
             resp = await client.post(
