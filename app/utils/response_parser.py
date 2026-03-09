@@ -45,6 +45,11 @@ def parse_response_to_structured(input_text: str) -> dict:
     cleaned_text = re.sub(r"^\s*#{1,6}\s*", "", cleaned_text, flags=re.MULTILINE)
     cleaned_text = re.sub(r'(?<![a-zA-Z0-9/:\-])_([^_\n]+)_(?![a-zA-Z0-9/:\-])', r'\1', cleaned_text).strip()
 
+    # Limpiar tags de imágenes inventados por el LLM (no son parte del sistema)
+    cleaned_text = re.sub(r'IMAGES\s*\{[^}]*\}\s*/IMAGES', '', cleaned_text, flags=re.DOTALL)
+    cleaned_text = re.sub(r'\[IMAGES\]\[/IMAGES\]', '', cleaned_text)
+    cleaned_text = re.sub(r'https://image\.pollinations\.ai/[^\s]*', '', cleaned_text)
+
     # 5. Segmentar texto por doble salto de línea
     segments = [
         s.strip()
