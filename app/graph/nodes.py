@@ -103,15 +103,18 @@ def _calculate_cli_b(profile_type: str, profile_data: dict, age: int) -> float:
     return round(max(0.0, min(1.0, cli_b)), 3)
 
 
-def _calculate_cli_op(current_cli_op: float, v_error: int, frustracion: int, comprension_history: list) -> float:
+def _calculate_cli_op(current_cli_op: float, v_error: int, frustracion: int, 
+                       comprension_history: list, t_latencia: float = 1.0,
+                       action_entropy: float = 0.0) -> float:
     """Calcula CLI_op (carga operativa por turno) según SOFFIA."""
     cli_op = current_cli_op
 
-    # Degradar si hay errores o frustración
-    if v_error >= 2 or frustracion >= 6:
+    if v_error >= 2 or frustracion >= 6 or t_latencia > 1.5:
         cli_op *= 0.8
 
-    # Mejorar si hay aciertos consecutivos (últimos 3 comprension >= 60)
+    if action_entropy > 0.5:
+        cli_op *= 0.9
+
     if len(comprension_history) >= 3:
         last_3 = comprension_history[-3:]
         if all(c >= 60 for c in last_3):
@@ -120,14 +123,63 @@ def _calculate_cli_op(current_cli_op: float, v_error: int, frustracion: int, com
     return round(max(0.0, min(1.0, cli_op)), 3)
 
 
-def _determine_zpd_state(v_error: int, frustracion: int, engagement: float) -> str:
+def _determine_zpd_state(v_error: int, frustracion: int, engagement: float,
+                          t_latencia: float = 1.0, action_entropy: float = 0.0) -> str:
     """Determina ZPD_State según SOFFIA."""
-    if v_error >= 2 or frustracion >= 6:
+    if v_error >= 2 or frustracion >= 6 or (t_latencia > 1.5 and frustracion >= 4):
         return "PANIC"
-    if engagement < 30:
+    if engagement < 30 or (t_latencia < 0.5 and action_entropy > 0.5):
         return "BOREOUT"
     return "FLOW"
 
+
+
+def _calculate_t_latencia(latencia_history: list, new_latencia_seconds: float) -> tuple[float, float, list]:
+    """Calcula T_latencia (ratio vs baseline) según SOFFIA."""
+    history = list(latencia_history)
+    if new_latencia_seconds > 0:
+        history.append(round(new_latencia_seconds, 1))
+    history = history[-20:]
+    
+    if len(history) < 2:
+        return 1.0, new_latencia_seconds, history
+    
+    baseline_data = history[:-1]
+    baseline = sum(baseline_data) / len(baseline_data) if baseline_data else new_latencia_seconds
+    
+    if baseline <= 0:
+        return 1.0, 0.0, history
+    
+    ratio = new_latencia_seconds / baseline
+    ratio = round(max(0.1, min(5.0, ratio)), 2)
+    
+    return ratio, round(baseline, 1), history
+
+
+def _calculate_action_entropy(topic_change_history: list, current_topic: str, 
+                                previous_topic: str, interaction_count: int) -> tuple[float, list]:
+    """Calcula Action_Entropy (variabilidad de tema sin consolidación). 0.0=enfocado, 1.0=saltando."""
+    history = list(topic_change_history)
+    
+    if current_topic and current_topic != previous_topic and previous_topic:
+        history.append({
+            "from": previous_topic,
+            "to": current_topic,
+            "interaction": interaction_count,
+        })
+    history = history[-10:]
+    
+    if not history:
+        return 0.0, history
+    
+    recent_changes = [
+        h for h in history 
+        if interaction_count - h.get("interaction", 0) <= 8
+    ]
+    
+    entropy = min(1.0, len(recent_changes) / 4.0)
+    
+    return round(entropy, 2), history
 
 
 def _log_cache_stats(response, context: str) -> None:
@@ -781,6 +833,8 @@ def build_response_messages(state: GraphState) -> tuple[list[BaseMessage], str]:
         f"Estado ZPD: {session.get('zpd_state', 'FLOW')}\n"
         f"Errores consecutivos (V_error): {session.get('v_error', 0)}\n"
         f"Mastery por tema: {session.get('mastery', {})}\n"
+        f"T_latencia (ratio vs baseline): {session.get('t_latencia', 1.0)}\n"
+        f"Action_Entropy (cambios de tema): {session.get('action_entropy', 0.0)}\n"
     )
 
     rag = state.get("rag_context") or ""
@@ -1000,6 +1054,7 @@ async def node_persist(state: GraphState) -> dict:
     """
     session = dict(state.get("session_state") or {})
     gk = state.get("gatekeeper_eval") or {}
+    _prev_interaction_time = session.get("last_interaction_time")
 
     # Actualizar contadores
     session["interaction_count"] = session.get("interaction_count", 0) + 1
@@ -1071,25 +1126,81 @@ async def node_persist(state: GraphState) -> dict:
         v_error = 0
     session["v_error"] = v_error
     
+    # T_latencia: calcular desde la diferencia de timestamps
+    try:
+        last_interaction = _prev_interaction_time
+        if last_interaction:
+            if isinstance(last_interaction, str):
+                last_dt = datetime.fromisoformat(last_interaction.replace("Z", "+00:00"))
+            else:
+                last_dt = last_interaction
+            now_dt = datetime.now(timezone.utc)
+            latencia_seconds = (now_dt - last_dt).total_seconds()
+            
+            if 2.0 <= latencia_seconds <= 1800.0:
+                t_latencia_history = list(session.get("t_latencia_history", []))
+                t_ratio, baseline, updated_history = _calculate_t_latencia(
+                    t_latencia_history, latencia_seconds
+                )
+                session["t_latencia"] = t_ratio
+                session["t_latencia_baseline"] = baseline
+                session["t_latencia_history"] = updated_history
+                logger.info(
+                    "[node_persist] T_latencia=%.2f (%.1fs vs baseline %.1fs)",
+                    t_ratio, latencia_seconds, baseline,
+                )
+    except Exception as e:
+        logger.warning("[node_persist] Error calculando T_latencia: %s", e)
+
+    # Action_Entropy: calcular desde cambios de tema
+    try:
+        previous_topic = session.get("_previous_topic", "")
+        current_detected = gk.get("topic", "")
+        if current_detected and not previous_topic:
+            session["_previous_topic"] = current_detected
+        elif current_detected:
+            topic_change_history = list(session.get("topic_change_history", []))
+            entropy, updated_changes = _calculate_action_entropy(
+                topic_change_history,
+                current_detected,
+                previous_topic,
+                session.get("interaction_count", 0),
+            )
+            session["action_entropy"] = entropy
+            session["topic_change_history"] = updated_changes
+            session["_previous_topic"] = current_detected
+            if entropy > 0:
+                logger.info(
+                    "[node_persist] Action_Entropy=%.2f (cambios recientes=%s)",
+                    entropy, len(updated_changes),
+                )
+    except Exception as e:
+        logger.warning("[node_persist] Error calculando Action_Entropy: %s", e)
+
     # Calcular CLI_op
     current_cli_op = session.get("cli_op", session.get("cli_b", 0.5))
     comp_history_for_cli = list(session.get("comprehension_history", []))
     session["cli_op"] = _calculate_cli_op(
         current_cli_op, v_error,
         gk.get("frustracion_nivel", 0),
-        comp_history_for_cli
+        comp_history_for_cli,
+        t_latencia=session.get("t_latencia", 1.0),
+        action_entropy=session.get("action_entropy", 0.0),
     )
     
     # Determinar ZPD_State
     session["zpd_state"] = _determine_zpd_state(
         v_error,
         gk.get("frustracion_nivel", 0),
-        gk.get("engagement_score", 50)
+        gk.get("engagement_score", 50),
+        t_latencia=session.get("t_latencia", 1.0),
+        action_entropy=session.get("action_entropy", 0.0),
     )
     
     logger.info(
-        "[node_persist] CLI_op=%.3f | V_error=%s | ZPD_State=%s | Comp=%.1f | Frust=%.1f",
-        session["cli_op"], v_error, session["zpd_state"], gk.get("comprension_score", 50), gk.get("frustracion_nivel", 0)
+        "[node_persist] CLI_op=%.3f | V_error=%s | ZPD_State=%s | T_lat=%.2f | Entropy=%.2f",
+        session["cli_op"], v_error, session["zpd_state"],
+        session.get("t_latencia", 1.0), session.get("action_entropy", 0.0),
     )
 
     # Mastery: actualizar para el topic actual (simplificado)
