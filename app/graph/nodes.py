@@ -733,6 +733,25 @@ async def node_persist(state: GraphState) -> dict:
                 gk.get("comprension_score", 0),
             )
 
+    # Rúbrica de metacognición: usar comprensión y engagement como proxy
+    # hasta implementar extracción de rúbrica del texto del LLM
+    if state.get("fase_actual") == "metacognicion":
+        comp = gk.get("comprension_score", 50)
+        eng = gk.get("engagement_score", 50)
+        # Proxy: factual y aplicación se basan en comprensión,
+        # análisis y síntesis se basan en el promedio de ambos
+        promedio = (comp + eng) / 2
+        session["rubric_scores"] = {
+            "factual": comp,
+            "aplicacion": comp,
+            "analisis": promedio,
+            "sintesis": promedio,
+        }
+        logger.info(
+            "[node_persist] Metacognición: rubric_scores generadas (proxy) — factual=%.0f, aplicacion=%.0f, analisis=%.0f, sintesis=%.0f",
+            comp, comp, promedio, promedio,
+        )
+
     client = SupabaseClient()
     try:
         await asyncio.gather(
