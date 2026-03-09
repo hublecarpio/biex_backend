@@ -407,3 +407,16 @@ class SupabaseClient:
             resp.raise_for_status()
         except Exception as e:
             logger.warning("[supabase] upsert_learner_insight falló: %s", e)
+
+    async def save_tutor_report(self, report: dict) -> None:
+        """POST /rest/v1/tutor_reports"""
+        logger.info("[supabase] POST tutor_reports...")
+        client = await self._get_service_client()
+        try:
+            resp = await client.post(
+                "/rest/v1/tutor_reports",
+                json=report
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[supabase] save_tutor_report falló: %s", e)

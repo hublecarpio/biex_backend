@@ -30,6 +30,106 @@ logger = logging.getLogger(__name__)
 cache_logger = logging.getLogger("cache_monitor")
 
 
+# ---------------------------------------------------------------------------
+# CLI Engine - Helpers
+# ---------------------------------------------------------------------------
+def _classify_user_profile(age: int) -> str:
+    """Clasifica al usuario según SOFFIA: EXPLORER (7-11) o ARCHITECT (12+)."""
+    if age <= 11:
+        return "EXPLORER"
+    return "ARCHITECT"
+
+
+def _map_input_preference(learning_style: list) -> str:
+    """Mapea el learningStyle del starter a Input_Preference de SOFFIA."""
+    if not learning_style:
+        return "VISUAL"
+    style = learning_style[0].lower() if learning_style else ""
+    if "visual" in style or "imagen" in style:
+        return "VISUAL"
+    elif "audio" in style or "escuch" in style:
+        return "AUDIO"
+    elif "kines" in style or "practic" in style or "hacer" in style:
+        return "KINESTHETIC"
+    elif "lect" in style or "text" in style or "leer" in style:
+        return "LECTO_ANALYTIC"
+    return "VISUAL"
+
+
+def _calculate_cli_b(profile_type: str, profile_data: dict, age: int) -> float:
+    """Calcula CLI_b (carga cognitiva inicial) según SOFFIA."""
+    if profile_type == "EXPLORER":
+        # Autonomía y Energía se infieren del perfil
+        autonomy = 0.5  # default
+        autonomy_raw = profile_data.get("autonomyLevel", "")
+        if "alta" in str(autonomy_raw).lower() or "mucha" in str(autonomy_raw).lower():
+            autonomy = 0.8
+        elif "baja" in str(autonomy_raw).lower() or "poca" in str(autonomy_raw).lower():
+            autonomy = 0.3
+
+        # Energía se infiere del challengeTolerance
+        energy = 0.5
+        tolerance = profile_data.get("challengeTolerance", "")
+        if "alta" in str(tolerance).lower() or "mucho" in str(tolerance).lower():
+            energy = 0.8
+        elif "baja" in str(tolerance).lower() or "poco" in str(tolerance).lower():
+            energy = 0.3
+
+        cli_b = (autonomy * 0.5) + (energy * 0.5)
+    else:
+        # ARCHITECT
+        density = 0.5
+        interaction = 0.5
+        comm_style = profile_data.get("communicationStyle", "")
+        if "detall" in str(comm_style).lower() or "profund" in str(comm_style).lower():
+            density = 0.7
+        
+        problem_approach = profile_data.get("problemApproach", "")
+        if "colab" in str(problem_approach).lower() or "grupo" in str(problem_approach).lower():
+            interaction = 0.7
+
+        # Resiliencia: no tenemos R_dec directo, usar challengeTolerance
+        resilience = 0.5
+        tolerance = profile_data.get("challengeTolerance", "")
+        if "alta" in str(tolerance).lower():
+            resilience = 0.8
+        elif "baja" in str(tolerance).lower():
+            resilience = 0.3
+
+        cli_b = (density * 0.3) + (interaction * 0.4) + (resilience * 0.3)
+
+    # Factor anti-sesgo
+    cli_b *= 0.85
+    return round(max(0.0, min(1.0, cli_b)), 3)
+
+
+def _calculate_cli_op(current_cli_op: float, v_error: int, frustracion: int, comprension_history: list) -> float:
+    """Calcula CLI_op (carga operativa por turno) según SOFFIA."""
+    cli_op = current_cli_op
+
+    # Degradar si hay errores o frustración
+    if v_error >= 2 or frustracion >= 6:
+        cli_op *= 0.8
+
+    # Mejorar si hay aciertos consecutivos (últimos 3 comprension >= 60)
+    if len(comprension_history) >= 3:
+        last_3 = comprension_history[-3:]
+        if all(c >= 60 for c in last_3):
+            cli_op *= 1.1
+
+    return round(max(0.0, min(1.0, cli_op)), 3)
+
+
+def _determine_zpd_state(v_error: int, frustracion: int, engagement: float) -> str:
+    """Determina ZPD_State según SOFFIA."""
+    if v_error >= 2 or frustracion >= 6:
+        return "PANIC"
+    if engagement < 30:
+        return "BOREOUT"
+    return "FLOW"
+
+
+
 def _log_cache_stats(response, context: str) -> None:
     """Loggea las estadísticas de Gemini Implicit Caching del response."""
     try:
@@ -444,6 +544,28 @@ async def node_setup(state: GraphState) -> dict:
         await client.close()
 
     starter_profile = starter_profile_obj.model_dump(by_alias=True) if starter_profile_obj else {}
+
+    # Clasificar perfil SOFFIA
+    age = starter_profile.get("age", 10) if starter_profile else 10
+    profile_data_raw = starter_profile.get("profile_data") or {}
+    if isinstance(profile_data_raw, str):
+        try:
+            import json as _json_temp
+            profile_data_raw = _json_temp.loads(profile_data_raw)
+        except Exception:
+            profile_data_raw = {}
+    
+    user_profile_type = _classify_user_profile(age)
+    input_preference = _map_input_preference(profile_data_raw.get("learningStyle", []))
+    
+    # Calcular CLI_b si es sesión nueva
+    if not session_state.get("cli_b") or session_state.get("cli_b") == 0.5:
+        cli_b = _calculate_cli_b(user_profile_type, profile_data_raw, age)
+        session_state["cli_b"] = cli_b
+        session_state["cli_op"] = cli_b  # CLI_op arranca igual a CLI_b
+    
+    session_state["user_profile_type"] = user_profile_type
+    session_state["input_preference"] = input_preference
     elapsed = time.perf_counter() - t0
     
     is_new_session = not bool(session_state.get("interaction_count"))
@@ -647,6 +769,12 @@ def build_response_messages(state: GraphState) -> tuple[list[BaseMessage], str]:
         f"Engagement: {gk.get('engagement_score', 'sin evaluar')}\n"
         f"Tema actual: {session.get('current_topic', 'por definir')}\n"
         f"Temas cubiertos en esta sesión: {', '.join(session.get('topics_covered', [])) or 'ninguno'}\n"
+        f"Perfil SOFFIA: {session.get('user_profile_type', 'EXPLORER')}\n"
+        f"Preferencia de input: {session.get('input_preference', 'VISUAL')}\n"
+        f"CLI operativo: {session.get('cli_op', 0.5)}\n"
+        f"Estado ZPD: {session.get('zpd_state', 'FLOW')}\n"
+        f"Errores consecutivos (V_error): {session.get('v_error', 0)}\n"
+        f"Mastery por tema: {session.get('mastery', {})}\n"
     )
 
     rag = state.get("rag_context") or ""
@@ -752,8 +880,9 @@ async def supervisor_decide(state: GraphState) -> dict:
     frustracion = gk.get("frustracion_nivel", 0)
     comprension = gk.get("comprension_score", 50)
 
-    # Regla 1: Frustración alta → vicario (en cualquier fase)
-    if frustracion >= T["frustracion_trigger_vicario"]:
+    # Regla 1: PANIC → vicario (en cualquier fase)
+    zpd_state = session.get("zpd_state", "FLOW")
+    if zpd_state == "PANIC" or frustracion >= T["frustracion_trigger_vicario"]:
         next_phase = "vicario"
 
     # Regla 2: Vicario + frustración resuelta → volver a generativa
@@ -926,6 +1055,52 @@ async def node_persist(state: GraphState) -> dict:
         logger.info("[node_persist] ZDP level recalculado: %.1f (comp_avg=%.1f, frust_avg=%.1f)",
                     session["zdp_level"], comp_avg, frust_avg)
 
+    # CLI Engine: actualizar CLI_op por turno
+    v_error = session.get("v_error", 0)
+    
+    # Actualizar V_error: si comprensión < 40, incrementar; si >= 60, resetear
+    if gk.get("comprension_score", 50) < 40:
+        v_error += 1
+    elif gk.get("comprension_score", 50) >= 60:
+        v_error = 0
+    session["v_error"] = v_error
+    
+    # Calcular CLI_op
+    current_cli_op = session.get("cli_op", session.get("cli_b", 0.5))
+    comp_history_for_cli = list(session.get("comprehension_history", []))
+    session["cli_op"] = _calculate_cli_op(
+        current_cli_op, v_error,
+        gk.get("frustracion_nivel", 0),
+        comp_history_for_cli
+    )
+    
+    # Determinar ZPD_State
+    session["zpd_state"] = _determine_zpd_state(
+        v_error,
+        gk.get("frustracion_nivel", 0),
+        gk.get("engagement_score", 50)
+    )
+    
+    logger.info(
+        "[node_persist] CLI_op=%.3f | V_error=%s | ZPD_State=%s",
+        session["cli_op"], v_error, session["zpd_state"],
+    )
+
+    # Mastery: actualizar para el topic actual (simplificado)
+    current_topic = session.get("current_topic", "")
+    if current_topic:
+        mastery = dict(session.get("mastery", {}))
+        current_mastery = mastery.get(current_topic, 0.0)
+        comp = gk.get("comprension_score", 50)
+        if comp >= 80:
+            current_mastery = min(5.0, current_mastery + 0.5)
+        elif comp >= 60:
+            current_mastery = min(5.0, current_mastery + 0.2)
+        elif comp < 40:
+            current_mastery = max(0.0, current_mastery - 0.3)
+        mastery[current_topic] = round(current_mastery, 1)
+        session["mastery"] = mastery
+
     # Contadores socrático: preguntas respondidas y respuestas correctas
     if state.get("fase_actual") == "socratico":
         session["socratic_questions_answered"] = session.get("socratic_questions_answered", 0) + 1
@@ -974,6 +1149,11 @@ async def node_persist(state: GraphState) -> dict:
             client.save_gatekeeper_evaluation({
                 "conversation_id": state.get("conversation_id"),
                 "user_id": state.get("user_id"),
+                "topic": gk.get("topic", ""),
+                "care_score": min(100, int(gk.get("engagement_score", 50) * 0.7 + gk.get("comprension_score", 50) * 0.3)),
+                "know_score": int(gk.get("comprension_score", 50)),
+                "construct_score": int(gk.get("comprension_score", 50) * 0.6 + gk.get("engagement_score", 50) * 0.4),
+                "do_score": int(gk.get("comprension_score", 50) * 0.5 + gk.get("engagement_score", 50) * 0.5),
                 "comprehension_score": int(round(gk.get("comprension_score", 0))),
                 "frustration_detected": gk.get("frustracion_detectada", False),
                 "frustration_level": gk.get("frustracion_nivel", 0),
@@ -1034,6 +1214,24 @@ async def node_persist(state: GraphState) -> dict:
 
                 logger.info("[node_persist] Learner insights escritos para metacognición — %s temas, %s misconceptions.",
                             len(topics[-5:]), len(list(session.get('misconceptions', []))[-5:]))
+
+                # Generar reporte machine-facing para tutor_reports
+                try:
+                    report_data = {
+                        "student_id": state.get("user_id"),
+                        "tutor_id": state.get("user_id"),  # self-report por ahora
+                        "conversation_id": state.get("conversation_id"),
+                        "topic": session.get("current_topic", "General"),
+                        "progress_summary": f"Interacciones: {session.get('interaction_count', 0)}. Comprensión promedio: {avg_comp:.0f}%. Temas: {', '.join(topics)}.",
+                        "difficulties": "; ".join(list(session.get("misconceptions", []))[-3:]) or "Ninguna detectada",
+                        "recommendations": f"ZPD final: {session.get('zdp_level', 50)}. CLI_op final: {session.get('cli_op', 0.5)}. {'Necesita refuerzo' if avg_comp < 60 else 'Buen progreso'}.",
+                        "emotional_state": f"Vicario triggers: {session.get('vicario_triggers', 0)}. Estado ZPD final: {session.get('zpd_state', 'FLOW')}.",
+                        "daily_observation": f"Mastery: {session.get('mastery', {})}. Fase final: {session.get('session_phase', 'metacognicion')}.",
+                    }
+                    await client.save_tutor_report(report_data)
+                    logger.info("[node_persist] Reporte de tutor generado para conversación %s", state.get("conversation_id"))
+                except Exception as e:
+                    logger.error("[node_persist] Error generando reporte de tutor: %s", e)
             except Exception as e:
                 logger.error("[node_persist] Error escribiendo learner_insights: %s", e)
 
