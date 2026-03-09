@@ -490,11 +490,9 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
         # Guard: no extraer temas visuales en interacciones tempranas, comprensión baja,
         # o contenido corto (saludo, respuesta breve). Ahorra 1 llamada LLM por turno.
         session_check = state.get("session_state") or {} if state else {}
-        gk_check = state.get("gatekeeper_eval") or {} if state else {}
         skip_images = (
-            session_check.get("interaction_count", 0) < 2
-            or gk_check.get("comprension_score", 50) < 35
-            or len(content) < 150
+            session_check.get("interaction_count", 0) < 1
+            or len(content) < 100
         )
 
         if skip_images:
