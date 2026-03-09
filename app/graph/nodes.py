@@ -486,6 +486,7 @@ def build_response_messages(state: GraphState) -> list[BaseMessage]:
         f"Comprensión actual: {gk.get('comprension_score', 'sin evaluar')}\n"
         f"Engagement: {gk.get('engagement_score', 'sin evaluar')}\n"
         f"Tema actual: {session.get('current_topic', 'por definir')}\n"
+        f"Temas cubiertos en esta sesión: {', '.join(session.get('topics_covered', [])) or 'ninguno'}\n"
     )
 
     rag = state.get("rag_context") or ""
