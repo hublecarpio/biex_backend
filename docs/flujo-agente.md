@@ -10,7 +10,7 @@ Diagrama de la lógica del agente y dónde se usa cada herramienta en el flujo d
 POST /api/v1/chat
     │  Body: mensaje, id_conversation, id_user, stream
     ▼
-Cargar historial desde Supabase REST (últimos 14 mensajes + nuevo)
+Cargar historial desde Supabase REST (últimos 19 mensajes + nuevo = 20)
     │
     ▼
 node_setup (paralelo):
@@ -116,7 +116,7 @@ flowchart TB
         A["POST /api/v1/chat"]
     end
     subgraph historia["Historial (Supabase REST)"]
-        B["Cargar últimos 14 mensajes"]
+        B["Cargar últimos 19 mensajes + nuevo"]
     end
     subgraph setup["node_setup"]
         C["system_prompt (cache 5min)"]
