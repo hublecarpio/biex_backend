@@ -208,16 +208,70 @@ async def _extract_image_topics(response_text: str) -> list[dict]:
 # Worker de imágenes en background
 # ---------------------------------------------------------------------------
 
-async def _generate_images_background(job_id: str, topics: list[dict]) -> None:
+def _detect_resource_suggestions(state: GraphState, fase: str) -> list[str]:
+    """Detecta qué recursos multimedia serían útiles en este punto de la sesión.
+    Retorna lista de strings: 'mind_map', 'fichas', 'video', 'podcast', 'informe'."""
+    session = state.get("session_state") or {}
+    gk = state.get("gatekeeper_eval") or {}
+    suggestions = []
+
+    interaction_count = session.get("interaction_count", 0)
+    topics_covered = session.get("topics_covered", [])
+    comprension = gk.get("comprension_score", 50)
+
+    # Mapa mental: cuando se cubrieron 3+ temas y comprensión es alta
+    if len(topics_covered) >= 3 and comprension >= 65:
+        suggestions.append("mind_map")
+
+    # Fichas: después de 8+ interacciones con comprensión moderada-alta
+    if interaction_count >= 8 and comprension >= 55:
+        suggestions.append("fichas")
+
+    # Video y Podcast: en fase de metacognición (cierre de sesión)
+    if fase == "metacognicion":
+        suggestions.append("video")
+        suggestions.append("podcast")
+
+    # Informe: en metacognición o después de muchas interacciones
+    if fase == "metacognicion" or interaction_count >= 15:
+        suggestions.append("informe")
+
+    if suggestions:
+        logger.info("[resource_suggestions] Sugerencias detectadas: %s", suggestions)
+
+    return suggestions
+
+
+async def _generate_images_background(job_id: str, topics: list[dict], conversation_id: str = "") -> None:
     """
-    Task de asyncio que ejecuta la generación de imágenes en background.
-    Actualiza el job store al completar o fallar.
-    No bloquea la respuesta al cliente.
+    Task de asyncio que genera imágenes en background.
+    Cuando las imágenes están listas, actualiza directamente el mensaje en Supabase
+    para que el frontend lo reciba vía Realtime UPDATE (sin polling).
     """
     from app.services.image_service import generate_images  # import local para evitar ciclos
     try:
         urls = await generate_images(topics)
         await complete_job(job_id, urls)
+
+        # Actualizar el mensaje en Supabase con las URLs resueltas
+        if urls and conversation_id:
+            # Esperar a que la Edge Function haya guardado el mensaje
+            await asyncio.sleep(8)
+            client = SupabaseClient()
+            try:
+                updated = await client.update_message_images(conversation_id, job_id, urls)
+                if not updated:
+                    logger.warning("[images_bg] Mensaje no encontrado para job %s, reintentando en 10s...", job_id)
+                    await asyncio.sleep(10)
+                    updated = await client.update_message_images(conversation_id, job_id, urls)
+                    if not updated:
+                        logger.error("[images_bg] Mensaje no encontrado después de reintento — job %s", job_id)
+                    else:
+                        logger.info("[images_bg] Mensaje actualizado con %s imagen(es) — job %s (reintento)", len(urls), job_id)
+                else:
+                    logger.info("[images_bg] Mensaje actualizado con %s imagen(es) — job %s", len(urls), job_id)
+            finally:
+                await client.close()
     except Exception as e:
         logger.error("[images_bg] Error en job %s: %s", job_id, e)
         await fail_job(job_id, str(e))
@@ -382,7 +436,7 @@ async def node_setup(state: GraphState) -> dict:
 # Invocador central con imágenes en background
 # ---------------------------------------------------------------------------
 
-async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) -> dict:
+async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, state: GraphState = None) -> dict:
     """
     Invoca el LLM, extrae el texto y lanza la generación de imágenes en background.
 
@@ -413,7 +467,8 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) 
         if topics:
             # ✅ OPTIMIZACIÓN: las imágenes se generan en background, no bloqueamos la respuesta
             job_id = await create_job(images_pending=len(topics))
-            asyncio.ensure_future(_generate_images_background(job_id, topics))
+            conversation_id = state.get("conversation_id", "") if state else ""
+            asyncio.ensure_future(_generate_images_background(job_id, topics, conversation_id))
             images_job_id = job_id
             images_pending = len(topics)
             logger.info("[%s] Imágenes lanzadas en background — job_id=%s, pending=%s",
@@ -421,12 +476,18 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str) 
     else:
         logger.info("[%s] Extracción de temas visuales saltada (solo se ejecuta en generativa).", fase)
 
+    # Detectar sugerencias de recursos multimedia
+    suggested_resources = []
+    if state:
+        suggested_resources = _detect_resource_suggestions(state, fase)
+
     return {
         "messages": [AIMessage(content=content)],
         "fase_actual": fase,
         "image_urls": [],          # vacío: las URLs llegan async vía job polling
         "images_job_id": images_job_id,
         "images_pending": images_pending,
+        "suggested_resources": suggested_resources,
     }
 
 
@@ -519,28 +580,28 @@ async def node_generativo(state: GraphState) -> dict:
     """Genera respuesta educativa. Fase: generativa."""
     logger.info("[node_generativo] Generando respuesta...")
     full_messages = build_response_messages(state)
-    return await _invoke_with_images(_get_llm(), full_messages, "generativa")
+    return await _invoke_with_images(_get_llm(), full_messages, "generativa", state)
 
 
 async def node_vicario(state: GraphState) -> dict:
     """Modo empatía / pensamiento en voz alta. Fase: vicario."""
     logger.info("[node_vicario] Generando respuesta vicario...")
     full_messages = build_response_messages(state)
-    return await _invoke_with_images(_get_llm(), full_messages, "vicario")
+    return await _invoke_with_images(_get_llm(), full_messages, "vicario", state)
 
 
 async def node_socratico(state: GraphState) -> dict:
     """Preguntas de pensamiento crítico. Fase: socratico."""
     logger.info("[node_socratico] Generando preguntas socráticas...")
     full_messages = build_response_messages(state)
-    return await _invoke_with_images(_get_llm(), full_messages, "socratico")
+    return await _invoke_with_images(_get_llm(), full_messages, "socratico", state)
 
 
 async def node_metacognicion(state: GraphState) -> dict:
     """Cierre de sesión con reflexión metacognitiva."""
     logger.info("[node_metacognicion] Ejecutando nodo de metacognición...")
     full_messages = build_response_messages(state)
-    return await _invoke_with_images(_get_llm(), full_messages, "metacognicion")
+    return await _invoke_with_images(_get_llm(), full_messages, "metacognicion", state)
 
 
 # ---------------------------------------------------------------------------
@@ -748,6 +809,16 @@ async def node_persist(state: GraphState) -> dict:
             session["vicario_triggers"],
         )
 
+    # Calcular zdp_level basado en comprensión y frustración recientes
+    comp_h = list(session.get("comprehension_history", []))[-5:]
+    frust_h = list(session.get("frustration_history", []))[-5:]
+    if comp_h:
+        comp_avg = sum(comp_h) / len(comp_h)
+        frust_avg = sum(frust_h) / len(frust_h) if frust_h else 0
+        session["zdp_level"] = round(max(0.0, min(100.0, comp_avg - (frust_avg * 10))), 1)
+        logger.info("[node_persist] ZDP level recalculado: %.1f (comp_avg=%.1f, frust_avg=%.1f)",
+                    session["zdp_level"], comp_avg, frust_avg)
+
     # Contadores socrático: preguntas respondidas y respuestas correctas
     if state.get("fase_actual") == "socratico":
         session["socratic_questions_answered"] = session.get("socratic_questions_answered", 0) + 1
@@ -812,6 +883,53 @@ async def node_persist(state: GraphState) -> dict:
                 state.get("fase_actual", "generativa"),
             ),
         )
+
+        # Escribir learner_insights al cierre de sesión (metacognición)
+        if state.get("fase_actual") == "metacognicion":
+            try:
+                topics = list(session.get("topics_covered", []))
+                comp_h = list(session.get("comprehension_history", []))
+                avg_comp = sum(comp_h) / len(comp_h) if comp_h else 50
+
+                # Insights de dominio por tema
+                for topic in topics[-5:]:
+                    await client.upsert_learner_insight({
+                        "user_id": state.get("user_id"),
+                        "conversation_id": state.get("conversation_id"),
+                        "insight_type": "topic_mastery",
+                        "insight_key": topic,
+                        "insight_value": f"Comprensión promedio: {avg_comp:.0f}%. Temas en sesión: {len(topics)}. Interacciones: {session.get('interaction_count', 0)}.",
+                        "confidence": min(avg_comp / 100, 1.0),
+                    })
+
+                # Insights de misconceptions
+                for mc in list(session.get("misconceptions", []))[-5:]:
+                    await client.upsert_learner_insight({
+                        "user_id": state.get("user_id"),
+                        "conversation_id": state.get("conversation_id"),
+                        "insight_type": "misconception",
+                        "insight_key": mc[:50],
+                        "insight_value": mc,
+                        "confidence": 0.7,
+                    })
+
+                # Insight de resiliencia (basado en triggers vicario)
+                vicario_triggers = session.get("vicario_triggers", 0)
+                if vicario_triggers > 0:
+                    await client.upsert_learner_insight({
+                        "user_id": state.get("user_id"),
+                        "conversation_id": state.get("conversation_id"),
+                        "insight_type": "emotional_pattern",
+                        "insight_key": "frustration_frequency",
+                        "insight_value": f"Activaciones vicario en sesión: {vicario_triggers}. ZDP final: {session.get('zdp_level', 50)}.",
+                        "confidence": 0.6,
+                    })
+
+                logger.info("[node_persist] Learner insights escritos para metacognición — %s temas, %s misconceptions.",
+                            len(topics[-5:]), len(list(session.get('misconceptions', []))[-5:]))
+            except Exception as e:
+                logger.error("[node_persist] Error escribiendo learner_insights: %s", e)
+
         logger.info(
             "[node_persist] Estado guardado — interacción #%s, fase=%s",
             session["interaction_count"],

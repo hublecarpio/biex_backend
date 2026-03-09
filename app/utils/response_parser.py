@@ -43,7 +43,7 @@ def parse_response_to_structured(input_text: str) -> dict:
     cleaned_text = re.sub(r"^\s*-\s*", "", cleaned_text, flags=re.MULTILINE)
     # Quitar encabezados markdown (#, ##, ###)
     cleaned_text = re.sub(r"^\s*#{1,6}\s*", "", cleaned_text, flags=re.MULTILINE)
-    cleaned_text = cleaned_text.replace("_", "").strip()
+    cleaned_text = re.sub(r'(?<![a-zA-Z0-9/:\-])_([^_\n]+)_(?![a-zA-Z0-9/:\-])', r'\1', cleaned_text).strip()
 
     # 5. Segmentar texto por doble salto de línea
     segments = [

@@ -216,6 +216,7 @@ async def chat(http_request: Request, body: ChatRequest):
             images_pending,
             images_job_id,
         )
+        suggested_resources = result.get("suggested_resources") or []
         return ChatResponseStructured(
             mensajes=parsed["mensajes"],
             images=all_images,
@@ -223,6 +224,7 @@ async def chat(http_request: Request, body: ChatRequest):
             images_pending=images_pending,
             images_job_id=images_job_id,
             current_phase=fase,
+            suggested_resources=suggested_resources,
         )
 
     # --- Modo Streaming SSE ---
@@ -233,6 +235,7 @@ async def chat(http_request: Request, body: ChatRequest):
         images_job_id: str | None = None
         images_pending: int = 0
         image_urls_from_state: list[str] = []
+        suggested_resources: list[str] = []
         fase = "generativa"
 
         async for event in graph.astream_events(
@@ -268,7 +271,11 @@ async def chat(http_request: Request, body: ChatRequest):
                     urls = output.get("image_urls") or []
                     if urls:
                         image_urls_from_state = urls
-                    
+
+                    sr = output.get("suggested_resources")
+                    if sr:
+                        suggested_resources = sr
+
                     if "fase_actual" in output:
                         fase = output["fase_actual"]
 
@@ -282,6 +289,6 @@ async def chat(http_request: Request, body: ChatRequest):
             elapsed, len(full_response), images_pending, images_job_id,
         )
 
-        yield f"data: {json.dumps({'done': True, 'mensajes': parsed['mensajes'], 'images': all_images, 'images_count': len(all_images) + images_pending, 'images_pending': images_pending, 'images_job_id': images_job_id})}\n\n"
+        yield f"data: {json.dumps({'done': True, 'mensajes': parsed['mensajes'], 'images': all_images, 'images_count': len(all_images) + images_pending, 'images_pending': images_pending, 'images_job_id': images_job_id, 'suggested_resources': suggested_resources})}\n\n"
 
     return EventSourceResponse(event_generator())

@@ -1,6 +1,7 @@
 """
 Cliente asíncrono para Supabase Edge Functions usando httpx.
 """
+import json as _json
 import logging
 
 import httpx
@@ -326,3 +327,83 @@ class SupabaseClient:
             resp.raise_for_status()
         except Exception as e:
             logger.warning("[supabase] update_conversation_phase falló: %s", e)
+
+    async def update_message_images(self, conversation_id: str, job_id: str, urls: list[str]) -> bool:
+        """Busca el mensaje del asistente con este job_id en metadata y le agrega las URLs de imágenes.
+        Retorna True si actualizó correctamente, False si no encontró el mensaje."""
+        logger.info("[supabase] Buscando mensaje para actualizar imágenes — job_id=%s...", job_id)
+        client = await self._get_service_client()
+        try:
+            resp = await client.get(
+                "/rest/v1/messages",
+                params={
+                    "conversation_id": f"eq.{conversation_id}",
+                    "role": "eq.assistant",
+                    "order": "created_at.desc",
+                    "limit": "5",
+                }
+            )
+            resp.raise_for_status()
+            messages = resp.json()
+
+            target = None
+            for msg in messages:
+                meta = msg.get("metadata") or {}
+                if isinstance(meta, str):
+                    try:
+                        meta = _json.loads(meta)
+                    except Exception:
+                        continue
+                if meta.get("images_job_id") == job_id:
+                    target = msg
+                    break
+
+            if not target:
+                return False
+
+            # Construir mensaje actualizado con tag de imágenes
+            current_msg = target.get("message", "")
+            images_tag = f" [IMAGES]{'|'.join(urls)}[/IMAGES]"
+
+            meta = target.get("metadata") or {}
+            if isinstance(meta, str):
+                try:
+                    meta = _json.loads(meta)
+                except Exception:
+                    meta = {}
+            meta["images_pending"] = 0
+            meta["images_resolved"] = True
+
+            resp = await client.patch(
+                "/rest/v1/messages",
+                params={"id": f"eq.{target['id']}"},
+                json={"message": current_msg + images_tag, "metadata": meta}
+            )
+            resp.raise_for_status()
+            logger.info("[supabase] Mensaje %s actualizado con %s imagen(es).", target["id"], len(urls))
+            return True
+
+        except Exception as e:
+            logger.error("[supabase] update_message_images falló: %s", e)
+            return False
+
+    async def upsert_learner_insight(self, insight: dict) -> None:
+        """Llama a la función RPC upsert_learner_insight en Supabase.
+        Hace upsert: si el insight ya existe para ese user+type+key, incrementa observation_count."""
+        logger.info("[supabase] RPC upsert_learner_insight...")
+        client = await self._get_service_client()
+        try:
+            resp = await client.post(
+                "/rest/v1/rpc/upsert_learner_insight",
+                json={
+                    "p_user_id": insight["user_id"],
+                    "p_conversation_id": insight["conversation_id"],
+                    "p_insight_type": insight["insight_type"],
+                    "p_insight_key": insight["insight_key"],
+                    "p_insight_value": insight["insight_value"],
+                    "p_confidence": insight.get("confidence", 0.5),
+                }
+            )
+            resp.raise_for_status()
+        except Exception as e:
+            logger.warning("[supabase] upsert_learner_insight falló: %s", e)

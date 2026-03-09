@@ -46,6 +46,10 @@ class ChatResponseStructured(BaseModel):
     images_pending: int = Field(default=0, description="Imágenes siendo generadas en background")
     images_job_id: str | None = Field(default=None, description="Job ID para polling de imágenes")
     current_phase: str = "generativa"
+    suggested_resources: list[str] = Field(
+        default_factory=list,
+        description="Recursos sugeridos: 'mind_map', 'fichas', 'video', 'podcast', 'informe'"
+    )
 
 
 class ImageJobResponse(BaseModel):
