@@ -557,6 +557,7 @@ SUPERVISOR_THRESHOLDS = {
 
     # Socrático → Metacognición
     "socratico_correctas_para_meta": 3,     # Respuestas correctas en socrático para avanzar
+    "socratico_comprension_correcta": 60,   # Score mínimo (0-100) para contar respuesta como correcta
 
     # Recalibración (vuelta a generativa)
     "comprension_recalibracion": 40,        # Comprensión por debajo de esto → recalibrar
@@ -718,6 +719,19 @@ async def node_persist(state: GraphState) -> dict:
     # Contador de triggers vicario
     if state.get("fase_actual") == "vicario":
         session["vicario_triggers"] = session.get("vicario_triggers", 0) + 1
+
+    # Contadores socrático: preguntas respondidas y respuestas correctas
+    if state.get("fase_actual") == "socratico":
+        session["socratic_questions_answered"] = session.get("socratic_questions_answered", 0) + 1
+        # Si la comprensión del mensaje es >= 60, contar como respuesta correcta
+        # Usamos el umbral configurado por si se ajusta después
+        if gk.get("comprension_score", 0) >= SUPERVISOR_THRESHOLDS.get("socratico_comprension_correcta", 60):
+            session["socratic_correct_answers"] = session.get("socratic_correct_answers", 0) + 1
+            logger.info(
+                "[node_persist] Socrático: respuesta correcta #%s (comprensión=%.1f)",
+                session["socratic_correct_answers"],
+                gk.get("comprension_score", 0),
+            )
 
     client = SupabaseClient()
     try:
