@@ -761,10 +761,10 @@ async def node_persist(state: GraphState) -> dict:
             client.save_gatekeeper_evaluation({
                 "conversation_id": state.get("conversation_id"),
                 "user_id": state.get("user_id"),
-                "comprehension_score": gk.get("comprension_score", 0),
+                "comprehension_score": int(round(gk.get("comprension_score", 0))),
                 "frustration_detected": gk.get("frustracion_detectada", False),
                 "frustration_level": gk.get("frustracion_nivel", 0),
-                "engagement_score": gk.get("engagement_score", 0),
+                "engagement_score": int(round(gk.get("engagement_score", 0))),
                 "misconceptions": gk.get("misconceptions", []),
                 "recommendation": gk.get("recomendacion", "continuar"),
                 "justification": gk.get("justificacion", ""),
