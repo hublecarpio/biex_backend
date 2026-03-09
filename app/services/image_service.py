@@ -48,7 +48,12 @@ async def generate_images(temas: list[dict]) -> list[str]:
 
         # El webhook puede retornar {"urls": [...]} o directamente [...]
         if isinstance(data, list):
-            urls = [item for item in data if isinstance(item, str)]
+            # n8n devuelve [{"urls": ["url1", "url2"]}] — extraer del primer elemento
+            if len(data) > 0 and isinstance(data[0], dict):
+                urls = data[0].get("urls") or data[0].get("images") or []
+                urls = [u for u in urls if isinstance(u, str)]
+            else:
+                urls = [item for item in data if isinstance(item, str)]
         elif isinstance(data, dict):
             urls = data.get("urls") or data.get("images") or []
             # Fallback: si n8n retorna URLs en campo "response" (formato legacy)

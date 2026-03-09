@@ -279,7 +279,7 @@ async def _generate_images_background(job_id: str, topics: list[dict], conversat
         await complete_job(job_id, urls)
 
         # Actualizar el mensaje en Supabase con las URLs resueltas
-        if urls and conversation_id:
+        if conversation_id:
             # Esperar a que la Edge Function haya guardado el mensaje
             await asyncio.sleep(8)
             client = SupabaseClient()
