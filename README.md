@@ -57,6 +57,6 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000
 - `images_count` – Número total de imágenes (incluyendo pendientes)
 - `images_pending` – Imágenes generándose en background (frontend muestra placeholders)
 - `images_job_id` – ID del job para polling via `GET /api/v1/images/{job_id}` (null si no hay imágenes)
-- `current_phase` – Fase actual del tutor (`generativa`, `vicaria`, `socratica`, `metacognicion`)
+- `current_phase` – Fase actual del tutor (`generativa`, `vicario`, `socratico`, `metacognicion`)
 
 Si se define `DATABASE_URL` (Postgres), la memoria por conversación se persiste en la BD (tablas de LangGraph).

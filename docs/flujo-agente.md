@@ -36,8 +36,8 @@ supervisor_decide (determinístico, SIN LLM):
   - Si hay recalibración, carga protocolo "recalibracion"
     │
     ├── generativa    (Gemini + protocolo + RAG + imágenes en background)
-    ├── vicaria       (Gemini + protocolo, sin imágenes)
-    ├── socratica     (Gemini + protocolo, sin imágenes)
+    ├── vicario       (Gemini + protocolo, sin imágenes)
+    ├── socratico     (Gemini + protocolo, sin imágenes)
     └── metacognicion (Gemini + protocolo + rúbrica)
               │
               ▼
@@ -117,8 +117,8 @@ flowchart TB
     C --> D --> E --> F --> G --> H
     H --> I --> J
     J -->|generativa| K
-    J -->|vicaria| L
-    J -->|socratica| M
+    J -->|vicario| L
+    J -->|socratico| M
     J -->|metacognicion| N
     K --> O
     L --> O
