@@ -14,6 +14,7 @@ import ast
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -687,6 +688,7 @@ async def node_persist(state: GraphState) -> dict:
 
     # Actualizar contadores
     session["interaction_count"] = session.get("interaction_count", 0) + 1
+    session["last_interaction_time"] = datetime.now(timezone.utc).isoformat()
     session["session_phase"] = state.get("fase_actual", "generativa")
 
     # Historiales de comprensión (últimos 20)
