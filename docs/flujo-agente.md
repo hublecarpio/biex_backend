@@ -24,7 +24,7 @@ node_setup (paralelo):
     ▼
 evaluate_gatekeeper (Gemini con protocolo de DB):
   - Input: perfil + session_state (fase, comprensión, frustración, topic actual)
-            + insights + últimos 15 mensajes de la conversación
+            + insights + últimos 20 mensajes de la conversación
   - Output: GatekeeperEval (comprension_score, frustracion_nivel,
             engagement_score, misconceptions, recomendacion, justificacion,
             topic)
@@ -127,7 +127,7 @@ flowchart TB
         H["RAG condicional (clasificador LLM)"]
     end
     subgraph gatekeeper["evaluate_gatekeeper"]
-        I["Gemini: GatekeeperEval\ncomprensión · frustración · engagement · topic\n(últimos 15 mensajes)"]
+        I["Gemini: GatekeeperEval\ncomprensión · frustración · engagement · topic\n(últimos 20 mensajes)"]
     end
     subgraph supervisor["supervisor_decide (sin LLM)"]
         J["6 reglas de transición\n+ reset contadores socrático al salir\n+ carga protocolo de DB"]

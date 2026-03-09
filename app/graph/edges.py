@@ -152,8 +152,8 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
     zdp = session_state.get("zdp_level", 50.0)
     frust_history = session_state.get("frustration_history", [])[-3:]
 
-    # 5. Últimos 15 mensajes (alineado con build_response_messages)
-    last_msgs = messages[-15:]
+    # 5. Últimos 20 mensajes (alineado con build_response_messages)
+    last_msgs = messages[-20:]
     historial_str = ""
     for m in last_msgs:
         if isinstance(m, HumanMessage):

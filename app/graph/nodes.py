@@ -501,8 +501,8 @@ def build_response_messages(state: GraphState) -> list[BaseMessage]:
         + dynamic
     )
 
-    # Historial limitado a los últimos 15 mensajes
-    history = list(state.get("messages") or [])[-15:]
+    # Historial limitado a los últimos 20 mensajes
+    history = list(state.get("messages") or [])[-20:]
     return [SystemMessage(content=system_content)] + history
 
 
