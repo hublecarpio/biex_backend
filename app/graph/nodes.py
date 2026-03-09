@@ -942,20 +942,22 @@ async def supervisor_decide(state: GraphState) -> dict:
     frustracion = gk.get("frustracion_nivel", 0)
     comprension = gk.get("comprension_score", 50)
 
-    # Regla 1: PANIC → vicario (en cualquier fase)
+    # Regla 0: Escape del vicario por exceso de triggers (PRIORIDAD sobre PANIC)
+    # Si el alumno lleva demasiados turnos en vicario, forzar recalibración
+    # aunque siga en PANIC. Evita que quede atrapado indefinidamente.
     zpd_state = session.get("zpd_state", "FLOW")
-    if zpd_state == "PANIC" or frustracion >= T["frustracion_trigger_vicario"]:
+    if current_phase == "vicario" and session.get("vicario_triggers", 0) >= T["vicario_max_triggers"]:
+        next_phase = "generativa"
+        is_recalibration = True
+        logger.info("[supervisor] Escape de vicario por exceso de turnos (vicario_triggers=%s).", session.get("vicario_triggers", 0))
+
+    # Regla 1: PANIC → vicario (en cualquier fase excepto si ya estamos escapando)
+    elif zpd_state == "PANIC" or frustracion >= T["frustracion_trigger_vicario"]:
         next_phase = "vicario"
 
     # Regla 2: Vicario + frustración resuelta → volver a generativa
     elif current_phase == "vicario" and frustracion <= T["frustracion_salida_vicario"]:
         next_phase = "generativa"
-
-    # Regla 2b: Vicario por demasiados turnos → forzar recalibración
-    elif current_phase == "vicario" and session.get("vicario_triggers", 0) >= T["vicario_max_triggers"]:
-        next_phase = "generativa"
-        is_recalibration = True
-        logger.info("[supervisor] Escape de vicario por exceso de turnos (vicario_triggers=%s).", session.get("vicario_triggers", 0))
 
     # Regla 3: Override manual → socrático
     elif session.get("gatekeeper_override", False):
@@ -1057,6 +1059,7 @@ async def node_persist(state: GraphState) -> dict:
     session = dict(state.get("session_state") or {})
     gk = state.get("gatekeeper_eval") or {}
     _prev_interaction_time = session.get("last_interaction_time")
+    _prev_topic = session.get("current_topic", "")
 
     # Actualizar contadores
     session["interaction_count"] = session.get("interaction_count", 0) + 1
@@ -1156,21 +1159,17 @@ async def node_persist(state: GraphState) -> dict:
 
     # Action_Entropy: calcular desde cambios de tema
     try:
-        previous_topic = session.get("_previous_topic", "")
         current_detected = gk.get("topic", "")
-        if current_detected and not previous_topic:
-            session["_previous_topic"] = current_detected
-        elif current_detected:
+        if current_detected:
             topic_change_history = list(session.get("topic_change_history", []))
             entropy, updated_changes = _calculate_action_entropy(
                 topic_change_history,
                 current_detected,
-                previous_topic,
+                _prev_topic,
                 session.get("interaction_count", 0),
             )
             session["action_entropy"] = entropy
             session["topic_change_history"] = updated_changes
-            session["_previous_topic"] = current_detected
             if entropy > 0:
                 logger.info(
                     "[node_persist] Action_Entropy=%.2f (cambios recientes=%s)",
@@ -1288,8 +1287,6 @@ async def node_persist(state: GraphState) -> dict:
             gk_eval_payload["care_score"], gk_eval_payload["know_score"], 
             gk_eval_payload["construct_score"], gk_eval_payload["do_score"]
         )
-
-        session.pop("_previous_topic", None)
 
         await asyncio.gather(
             client.save_session_state(session),
