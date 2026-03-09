@@ -100,6 +100,7 @@ def _get_default_gatekeeper_eval(reason: str) -> dict:
             "misconceptions": [],
             "recomendacion": "continuar",
             "justificacion": f"Fallback por defecto: {reason}",
+            "topic": "",
         }
     }
 
