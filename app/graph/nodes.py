@@ -576,9 +576,10 @@ async def node_setup(state: GraphState) -> dict:
                "misconceptions": [],
                "socratic_questions_answered": 0, 
                "socratic_correct_answers": 0,
-               "gatekeeper_override": False, 
+               "gatekeeper_override": False,
                "phase_transitions": [],
-               "vicario_triggers": 0
+               "vicario_triggers": 0,
+               "images_generated_count": 0
             }
 
         # f) Obtener current_phase (referencia inicial)
@@ -734,6 +735,17 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
             or len(content) < 100
         )
 
+        # A2: No generar imagen cuando la respuesta es pregunta (SPM 4.1)
+        response_text = content.rstrip()
+        if response_text.endswith('?') or content.count('?') >= 2:
+            skip_images = True
+            logger.info("[%s] Imagen saltada: la respuesta es una pregunta.", fase)
+
+        # A3: Límite de 1 imagen por sesión (SPM 4.1 "máximo 1 imagen por sesión")
+        if session_check.get("images_generated_count", 0) >= 1:
+            skip_images = True
+            logger.info("[%s] Imagen saltada: límite de 1 imagen/sesión alcanzado.", fase)
+
         if skip_images:
             logger.info("[%s] Extracción de temas visuales saltada (guard: interacción temprana, baja comprensión, o respuesta corta).", fase)
             topics = []
@@ -747,6 +759,10 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
             asyncio.ensure_future(_generate_images_background(job_id, topics, conversation_id))
             images_job_id = job_id
             images_pending = len(topics)
+            # A3: Incrementar contador de imágenes generadas en la sesión
+            if state:
+                sess = state.get("session_state") or {}
+                sess["images_generated_count"] = sess.get("images_generated_count", 0) + 1
             logger.info("[%s] Imágenes lanzadas en background — job_id=%s, pending=%s",
                         fase, job_id, images_pending)
     else:
