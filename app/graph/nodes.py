@@ -727,8 +727,24 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
 
     # Solo extraer temas visuales en generativa y vicario
     if fase in ("generativa", "vicario"):
-        # Guard: no extraer temas visuales en interacciones tempranas, comprensión baja,
-        # o contenido corto (saludo, respuesta breve). Ahorra 1 llamada LLM por turno.
+        # Detectar si el alumno pidió imagen explícitamente (SPM 4.1)
+        user_requested_image = False
+        if state:
+            _msgs = list(state.get("messages") or [])
+            if _msgs:
+                _last_user = next(
+                    (m for m in reversed(_msgs) if isinstance(m, HumanMessage)), None
+                )
+                if _last_user:
+                    _user_text = (_last_user.content if isinstance(_last_user.content, str)
+                                  else str(_last_user.content)).lower()
+                    _image_keywords = ("imagen", "image", "dibujo", "foto", "visual",
+                                       "ilustra", "esquema", "diagrama", "gráfico")
+                    user_requested_image = any(kw in _user_text for kw in _image_keywords)
+                    if user_requested_image:
+                        logger.info("[%s] Alumno pidió imagen explícitamente — bypass de guards A2/A3 (SPM 4.1).", fase)
+
+        # Guard: no extraer temas visuales en interacciones tempranas o contenido corto
         session_check = state.get("session_state") or {} if state else {}
         skip_images = (
             session_check.get("interaction_count", 0) < 1
@@ -736,13 +752,16 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
         )
 
         # A2: No generar imagen cuando la respuesta es pregunta (SPM 4.1)
-        response_text = content.rstrip()
-        if response_text.endswith('?') or content.count('?') >= 2:
-            skip_images = True
-            logger.info("[%s] Imagen saltada: la respuesta es una pregunta.", fase)
+        # Bypass: si el alumno pidió imagen explícitamente, se respeta su pedido
+        if not user_requested_image:
+            response_text = content.rstrip()
+            if response_text.endswith('?') or content.count('?') >= 2:
+                skip_images = True
+                logger.info("[%s] Imagen saltada: la respuesta es una pregunta.", fase)
 
-        # A3: Límite de 1 imagen por sesión (SPM 4.1 "máximo 1 imagen por sesión")
-        if session_check.get("images_generated_count", 0) >= 1:
+        # A3: Límite de 1 imagen por sesión (SPM 4.1 "máximo 1 imagen por sesión,
+        # salvo petición explícita del usuario")
+        if not user_requested_image and session_check.get("images_generated_count", 0) >= 1:
             skip_images = True
             logger.info("[%s] Imagen saltada: límite de 1 imagen/sesión alcanzado.", fase)
 
