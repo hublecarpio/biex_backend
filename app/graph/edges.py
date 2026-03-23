@@ -114,6 +114,7 @@ def _get_default_gatekeeper_eval(reason: str) -> dict:
             "recomendacion": "continuar",
             "justificacion": f"Fallback por defecto: {reason}",
             "topic": "",
+            "image_needed": False,
         }
     }
 
@@ -205,7 +206,12 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
         '"misconceptions": ["<string>", ...], '
         '"recomendacion": "<continuar|intensificar|simplificar|vicario|socratico|metacognicion>", '
         '"justificacion": "<1 oración breve>", '
-        '"topic": "<tema educativo principal o vacío si no hay>"}'
+        '"topic": "<tema educativo principal o vacío si no hay>", '
+        '"image_needed": <true|false>}\n\n'
+        "image_needed = true cuando:\n"
+        "- El alumno pide explícitamente ver algo (\"muéstrame\", \"puedo ver?\", \"cómo se ve?\", \"me lo muestras?\", etc.)\n"
+        "- El alumno no entiende algo inherentemente visual (geografía, mapas, anatomía, procesos, estructuras, ciclos)\n"
+        "image_needed = false cuando el contenido es abstracto, conversacional o se explica bien con texto."
     )
 
     llm = _get_llm()
@@ -220,7 +226,7 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
 
 
     logger.info(
-        "[gatekeeper] Evaluación OK — comprensión=%.1f | frustración=%s (nivel=%s) | engagement=%.1f | rec=%s | topic='%s' | misconceptions=%s",
+        "[gatekeeper] Evaluación OK — comprensión=%.1f | frustración=%s (nivel=%s) | engagement=%.1f | rec=%s | topic='%s' | misconceptions=%s | image_needed=%s",
         eval_result.comprension_score,
         eval_result.frustracion_detectada,
         eval_result.frustracion_nivel,
@@ -228,6 +234,7 @@ async def evaluate_gatekeeper(state: GraphState) -> dict:
         eval_result.recomendacion,
         eval_result.topic or "(sin tema)",
         len(eval_result.misconceptions),
+        eval_result.image_needed,
     )
     if eval_result.misconceptions:
         logger.info("[gatekeeper] Misconceptions detectados: %s", eval_result.misconceptions)

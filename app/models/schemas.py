@@ -92,6 +92,12 @@ class GatekeeperEval(BaseModel):
         description="Tema educativo principal del mensaje. "
         "Vacío si es saludo o mensaje sin tema educativo."
     )
+    image_needed: bool = Field(
+        default=False,
+        description="True si el alumno pide explícitamente una imagen/visual/mapa/diagrama "
+        "o si el contenido que no entiende es inherentemente visual (geografía, anatomía, "
+        "procesos, estructuras) y una imagen ayudaría significativamente a la comprensión."
+    )
 
 
 # --- Supabase: Starter Profile ---

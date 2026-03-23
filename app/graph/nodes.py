@@ -350,7 +350,7 @@ async def _extract_image_topics(response_text: str) -> list[dict]:
         "Eres un curador de contenido visual educativo. Analiza esta respuesta de un tutor "
         "y extrae SOLO conceptos que REQUIERAN una imagen para ser comprendidos correctamente.\n\n"
         "REGLAS ESTRICTAS:\n"
-        "- Máximo 2 temas visuales por respuesta.\n"
+        "- Máximo 1 tema visual por respuesta.\n"
         "- Solo elementos que un estudiante NO puede imaginar fácilmente por sí mismo.\n"
         "- Priorizar: diagramas de procesos, estructuras anatómicas/científicas, relaciones causa-efecto, "
         "comparaciones visuales, ciclos, mapas conceptuales.\n"
@@ -725,25 +725,14 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
     images_job_id: str | None = None
     images_pending: int = 0
 
-    # Solo extraer temas visuales en generativa y vicario
-    if fase in ("generativa", "vicario"):
-        # Detectar si el alumno pidió imagen explícitamente (SPM 4.1)
-        user_requested_image = False
-        if state:
-            _msgs = list(state.get("messages") or [])
-            if _msgs:
-                _last_user = next(
-                    (m for m in reversed(_msgs) if isinstance(m, HumanMessage)), None
-                )
-                if _last_user:
-                    _user_text = (_last_user.content if isinstance(_last_user.content, str)
-                                  else str(_last_user.content)).lower()
-                    _image_keywords = ("imagen", "image", "dibujo", "foto", "visual",
-                                       "ilustra", "esquema", "diagrama", "gráfico")
-                    user_requested_image = any(kw in _user_text for kw in _image_keywords)
-                    if user_requested_image:
-                        logger.info("[%s] Alumno pidió imagen explícitamente — bypass de guards A2/A3 (SPM 4.1).", fase)
+    # Detectar si el gatekeeper determinó que se necesita imagen (SPM 4.1)
+    gk_eval = state.get("gatekeeper_eval") or {} if state else {}
+    image_needed = gk_eval.get("image_needed", False)
+    if image_needed:
+        logger.info("[%s] Gatekeeper indicó image_needed=True — bypass de fase y guard A2.", fase)
 
+    # Extraer temas visuales en generativa/vicario, o en cualquier fase si el gatekeeper lo indica
+    if fase in ("generativa", "vicario") or image_needed:
         # Guard: no extraer temas visuales en interacciones tempranas o contenido corto
         session_check = state.get("session_state") or {} if state else {}
         skip_images = (
@@ -752,8 +741,8 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
         )
 
         # A2: No generar imagen cuando la respuesta es pregunta (SPM 4.1)
-        # Bypass: si el alumno pidió imagen explícitamente, se respeta su pedido
-        if not user_requested_image:
+        # Bypass: si el gatekeeper indicó image_needed, se respeta
+        if not image_needed:
             response_text = content.rstrip()
             if response_text.endswith('?') or content.count('?') >= 2:
                 skip_images = True
