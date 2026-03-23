@@ -1,6 +1,6 @@
 """
-Parsea la respuesta cruda del agente a la estructura esperada por n8n:
-mensajes (segmentos de texto), images (URLs Minio), images_count.
+Parsea la respuesta cruda del agente a la estructura esperada por el frontend:
+mensajes (segmentos de texto con Markdown preservado), images (URLs Minio), images_count.
 """
 import re
 
@@ -14,9 +14,9 @@ IMAGE_REGEX = re.compile(
 
 def parse_response_to_structured(input_text: str) -> dict:
     """
-    Aplica la misma lógica del nodo Code de n8n:
     - Extrae y deduplica URLs de imágenes Minio.
-    - Limpia markdown del texto.
+    - Limpia artefactos internos del LLM (REPORT_JSON, tags de imágenes inventados).
+    - Preserva formato Markdown (el frontend lo renderiza).
     - Segmenta por doble salto de línea.
 
     Retorna dict con: mensajes (list[str]), images (list[str]), images_count (int).
@@ -29,30 +29,20 @@ def parse_response_to_structured(input_text: str) -> dict:
     # 2. Deduplicar
     images = list(dict.fromkeys(images))
 
-    # 3. Remover URLs del texto
+    # 3. Remover URLs de imágenes Minio del texto
     cleaned_text = IMAGE_REGEX.sub("", input_text)
 
-    # 4. Limpieza adicional de caracteres de formato Markdown
-    cleaned_text = (
-        cleaned_text.replace("**", "")
-        .replace("*", "")
-        .replace("[", "")
-        .replace("]", "")
-    )
-    # Quitar guiones de listas tipo markdown (- texto)
-    cleaned_text = re.sub(r"^\s*-\s*", "", cleaned_text, flags=re.MULTILINE)
-    # Quitar encabezados markdown (#, ##, ###)
-    cleaned_text = re.sub(r"^\s*#{1,6}\s*", "", cleaned_text, flags=re.MULTILINE)
-    cleaned_text = re.sub(r'(?<![a-zA-Z0-9/:\-])_([^_\n]+)_(?![a-zA-Z0-9/:\-])', r'\1', cleaned_text).strip()
-
-    # Limpiar bloques REPORT_JSON que el LLM copia del SPM (son internos, no visibles)
+    # 4. Limpiar artefactos internos del LLM (NO tocar formato Markdown)
+    # Bloques REPORT_JSON que el LLM copia del SPM (son internos, no visibles)
     cleaned_text = re.sub(r'<REPORT_JSON>[\s\S]*?</REPORT_JSON>', '', cleaned_text, flags=re.DOTALL)
     cleaned_text = re.sub(r'REPORT_JSON', '', cleaned_text)
 
-    # Limpiar tags de imágenes inventados por el LLM (no son parte del sistema)
+    # Tags de imágenes inventados por el LLM (no son parte del sistema)
     cleaned_text = re.sub(r'IMAGES\s*\{[^}]*\}\s*/IMAGES', '', cleaned_text, flags=re.DOTALL)
     cleaned_text = re.sub(r'\[IMAGES\]\[/IMAGES\]', '', cleaned_text)
     cleaned_text = re.sub(r'https://image\.pollinations\.ai/[^\s]*', '', cleaned_text)
+
+    cleaned_text = cleaned_text.strip()
 
     # 5. Segmentar texto por doble salto de línea
     segments = [
