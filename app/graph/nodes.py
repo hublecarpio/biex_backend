@@ -759,17 +759,21 @@ async def _invoke_with_images(llm, full_messages: list[BaseMessage], fase: str, 
                 skip_images = True
                 logger.info("[%s] Imagen saltada: la respuesta es una pregunta.", fase)
 
-        # A3: Límite de 1 imagen por sesión (SPM 4.1 "máximo 1 imagen por sesión,
-        # salvo petición explícita del usuario")
-        if not user_requested_image and session_check.get("images_generated_count", 0) >= 1:
+        # A3: Límite de 5 imágenes por sesión (SPM 4.1 actualizado)
+        # Máximo 5 por sesión; si el alumno pide explícitamente, se respeta igualmente.
+        if session_check.get("images_generated_count", 0) >= 5:
             skip_images = True
-            logger.info("[%s] Imagen saltada: límite de 1 imagen/sesión alcanzado.", fase)
+            logger.info("[%s] Imagen saltada: límite de 5 imágenes/sesión alcanzado.", fase)
 
         if skip_images:
             logger.info("[%s] Extracción de temas visuales saltada (guard: interacción temprana, baja comprensión, o respuesta corta).", fase)
             topics = []
         else:
             topics = await _extract_image_topics(content)
+            # SPM 4.1: máximo 1 imagen por respuesta individual
+            if len(topics) > 1:
+                logger.info("[%s] Recortando %d temas a 1 (máx 1 imagen/respuesta).", fase, len(topics))
+                topics = topics[:1]
 
         if topics:
             # ✅ OPTIMIZACIÓN: las imágenes se generan en background, no bloqueamos la respuesta
@@ -847,10 +851,18 @@ def build_response_messages(state: GraphState) -> tuple[list[BaseMessage], str]:
     else:
         insights_text = "Primera sesión, sin observaciones previas."
 
+    # Variables estáticas del Memory Stack (SPM 1.1)
+    grade = profile_data.get('grade', profile.get('grade', 'desconocido'))
+    school_context = profile_data.get('schoolContext', profile.get('school_context', ''))
+    ib_trigger = profile_data.get('ibTrigger', profile.get('ib_trigger', 'false'))
+
     dynamic = (
         f"--- PERFIL DEL ALUMNO ---\n"
         f"Descripción: {profile_data.get('description', '')}\n"
         f"Edad: {profile.get('age', 'desconocida')}\n"
+        f"Grado: {grade}\n"
+        f"Contexto escolar: {school_context}\n"
+        f"IB_Trigger: {ib_trigger}\n"
         f"Intereses: {', '.join(profile_data.get('interests', []))}\n"
         f"Dato único: {profile_data.get('uniqueData', '')}\n"
         f"Estilo de aprendizaje: {', '.join(profile_data.get('learningStyle', []))}\n"
